@@ -102,6 +102,8 @@ spec:
   defaultResources:
     - template: config
       name: default
+  provides: []      # capability contracts offered by this package
+  requires: []      # capability contracts consumed by this package
 ```
 
 Install/resource descriptor:
@@ -116,6 +118,10 @@ spec:
   dependsOn: [metallb/install]
   hooks: {}
   overlays: []
+  provisioningStyle: crd   # crd (default) or script
+  scriptImage: ""          # required when provisioningStyle=script; pinned, never :latest
+  scriptServiceAccount: "" # optional; defaults to "default" when wrapped in a Job
+  readiness: []            # ReadinessCheck entries; feeds apply-wave + gitups.io/readiness
   helm:
     repo: https://example.invalid/charts
     chart: name
@@ -125,6 +131,108 @@ spec:
 
 Input fields: `name`, `type`, `default`, `enum`, `required`, `sensitive`,
 `placeholder`, `placeholderReason`.
+
+## Capability bindings
+
+Packages declare structural capability contracts; the user wires them in
+`Provision` with a binding. Expand synthesizes one consumer-side resource
+(in the consumer's env repo) and one provider-side resource per env repo
+that references the provider's generic repo.
+
+`package.yaml` — provider side:
+
+```yaml
+spec:
+  provides:
+    - capability: git-provider
+      resourceTemplate: user         # resources/user/descriptor.yaml must exist
+      exports:
+        - name: url
+          from: input:rootURL        # read from the provider install's values
+        - name: username
+          from: binding:username     # supplied via Provision binding.values.username
+        - name: token
+          from: placeholder          # emits __GITUPS_PLACEHOLDER__ on both sides
+          secret: true
+```
+
+`from` grammar: `input:<dotted.key>` | `binding:<key>` | `placeholder`.
+
+`package.yaml` — consumer side:
+
+```yaml
+spec:
+  requires:
+    - capability: git-provider
+      resourceTemplate: repo-secret  # resources/repo-secret/descriptor.yaml
+      consumes:
+        - input: repoURL
+          from: provider.url         # must match a declared export name
+        - input: repoUsername
+          from: provider.username
+        - input: repoPassword
+          from: provider.token
+```
+
+`Provision` — wiring under a consumer `packages[]` entry:
+
+```yaml
+packages:
+  - template: local/argocd
+    bindings:
+      - name: argocd-gitea-bot       # required, unique across the Provision
+        capability: git-provider
+        provider:
+          repo: support-services
+          instance: gitea
+        values:
+          username: argocd-bot
+```
+
+Expand-time rules:
+
+- Binding `name` is required and must be globally unique in the Provision;
+  it is also the resource-name stem for both synthesized units.
+- Provider `{repo, instance}` must resolve to a selected package in a
+  generic repo; otherwise expand errors.
+- For every `binding:<key>` in the provider's exports, the consumer must
+  supply `bindings[].values.<key>`.
+- Consumer `consumes[].input` must match an input declared by the
+  consumer's `resourceTemplate` descriptor.
+- Fan-out is per env repo that references the provider's generic repo,
+  sorted by env-repo name for deterministic output. Each provider unit
+  carries a per-env suffix so identity stays stable across envs.
+- Secret exports share one placeholder path per env; non-secret exports
+  render as literal values identically on both sides. The user fills the
+  placeholder once on the provider side; re-expand mirrors the fill to
+  the consumer.
+
+## Apply order and readiness
+
+Every rendered manifest carries `gitups.io/apply-wave: "<int>"` as a
+commonAnnotation, computed from the unified dependsOn DAG (descriptor
+dependsOn + binding-synthesized edges). Roots = 0, otherwise
+max(deps)+1. Controller packages translate this into their native
+sync-wave key via an overlay; gitups core stays controller-agnostic.
+
+Descriptor `spec.readiness[]` entries emit
+`gitups.io/readiness: "<json>"` on rendered manifests. `name` and
+`namespace` may reference `.Values` (rendered at emit time); `kind` and
+`condition` are literals. Advisory — consumed by `gitups wait` and
+controller overlays that map readiness to native health checks. Never
+read from the cluster during render.
+
+## Script-style resources
+
+Set `spec.provisioningStyle: script` on a resource descriptor when no
+operator CRD fits the capability. The descriptor ships
+`scripts/provision.sh` (required) and optionally `scripts/teardown.sh`.
+Gitups wraps the scripts in a deterministic `batch/v1.Job` plus two
+ConfigMaps (scripts + resolved values at
+`/etc/gitups/values.json`). `spec.renderer` must be `raw`, `scriptImage`
+is required and must be pinned (tag or digest — never `:latest` and
+never implicit). `scriptServiceAccount` optionally selects a
+ServiceAccount authored elsewhere in the package.
 
 ## Gotchas
 

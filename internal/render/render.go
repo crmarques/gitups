@@ -7,6 +7,7 @@ package render
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -240,13 +241,17 @@ func failOnPlaceholders(fp *v1.FullProvision) error {
 }
 
 type renderUnit struct {
-	SourceDir string
-	Renderer  string
-	OLM       *v1.OLMSpec
-	Helm      *v1.HelmSpec
-	Kustomize *v1.KustomizeSpec
-	Hooks     *v1.HookSpec
-	Overlays  []string
+	SourceDir            string
+	Renderer             string
+	OLM                  *v1.OLMSpec
+	Helm                 *v1.HelmSpec
+	Kustomize            *v1.KustomizeSpec
+	Hooks                *v1.HookSpec
+	Overlays             []string
+	Readiness            []v1.ReadinessCheck
+	ProvisioningStyle    string
+	ScriptImage          string
+	ScriptServiceAccount string
 }
 
 func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, error) {
@@ -264,6 +269,7 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, err
 			Kustomize: u.Descriptor.Kustomize,
 			Hooks:     u.Descriptor.Hooks,
 			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+			Readiness: append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...),
 		}, nil
 	case v1.UnitTypeResource:
 		u, ok := entry.Resources[rp.ResourceTemplate]
@@ -271,13 +277,17 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, err
 			return renderUnit{}, fmt.Errorf("resource template %q not declared by package %q", rp.ResourceTemplate, entry.Def.Metadata.Name)
 		}
 		return renderUnit{
-			SourceDir: u.SourceDir,
-			Renderer:  u.Descriptor.Renderer,
-			OLM:       u.Descriptor.OLM,
-			Helm:      u.Descriptor.Helm,
-			Kustomize: u.Descriptor.Kustomize,
-			Hooks:     u.Descriptor.Hooks,
-			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+			SourceDir:            u.SourceDir,
+			Renderer:             u.Descriptor.Renderer,
+			OLM:                  u.Descriptor.OLM,
+			Helm:                 u.Descriptor.Helm,
+			Kustomize:            u.Descriptor.Kustomize,
+			Hooks:                u.Descriptor.Hooks,
+			Overlays:             append([]string(nil), u.Descriptor.Overlays...),
+			Readiness:            append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...),
+			ProvisioningStyle:    u.Descriptor.ProvisioningStyle,
+			ScriptImage:          u.Descriptor.ScriptImage,
+			ScriptServiceAccount: u.Descriptor.ScriptServiceAccount,
 		}, nil
 	default:
 		return renderUnit{}, fmt.Errorf("unknown unitType %q", rp.UnitType)
@@ -305,32 +315,38 @@ func renderPackage(ctx context.Context, rp *v1.ResolvedPackage, entry catalog.En
 		return err
 	}
 
-	switch unit.Renderer {
-	case "olm":
-		if err := renderOLM(ctx, rp, unit, pkgDir, tctx); err != nil {
+	if unit.ProvisioningStyle == v1.ProvisioningStyleScript {
+		if err := renderScript(rp, unit, pkgDir); err != nil {
 			return err
 		}
-	case "helm":
-		if err := renderHelm(ctx, rp, unit, pkgDir, tctx, opts.Helm); err != nil {
-			return err
+	} else {
+		switch unit.Renderer {
+		case "olm":
+			if err := renderOLM(ctx, rp, unit, pkgDir, tctx); err != nil {
+				return err
+			}
+		case "helm":
+			if err := renderHelm(ctx, rp, unit, pkgDir, tctx, opts.Helm); err != nil {
+				return err
+			}
+		case "kustomize":
+			if err := renderKustomize(ctx, rp, unit, pkgDir, tctx, opts.Kustomize); err != nil {
+				return err
+			}
+		case "raw":
+			if err := renderRaw(ctx, rp, unit, pkgDir, tctx); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown renderer %q", unit.Renderer)
 		}
-	case "kustomize":
-		if err := renderKustomize(ctx, rp, unit, pkgDir, tctx, opts.Kustomize); err != nil {
-			return err
-		}
-	case "raw":
-		if err := renderRaw(ctx, rp, unit, pkgDir, tctx); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unknown renderer %q", unit.Renderer)
 	}
 
 	if err := renderOverlays(unit, pkgDir, tctx); err != nil {
 		return err
 	}
 
-	if err := writePackageKustomization(pkgDir); err != nil {
+	if err := writePackageKustomization(pkgDir, rp, unit, tctx); err != nil {
 		return err
 	}
 
@@ -426,8 +442,10 @@ func writeKustomization(path string, resources []string) error {
 
 // writePackageKustomization writes a kustomization.yaml listing every .yaml
 // file in pkgDir except values.yaml (which is human-readable helm inputs, not
-// a k8s manifest) and kustomization.yaml itself.
-func writePackageKustomization(pkgDir string) error {
+// a k8s manifest) and kustomization.yaml itself. It also emits
+// commonAnnotations carrying the resolved apply-wave and readiness checks so
+// every manifest in the package is labeled without needing to re-parse YAML.
+func writePackageKustomization(pkgDir string, rp *v1.ResolvedPackage, unit renderUnit, tctx templateCtx) error {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return err
@@ -447,14 +465,64 @@ func writePackageKustomization(pkgDir string) error {
 		resources = append(resources, name)
 	}
 	sort.Strings(resources)
+
+	annotations := map[string]string{
+		v1.ApplyWaveAnnotation: fmt.Sprintf("%d", rp.ApplyWave),
+	}
+	if len(unit.Readiness) > 0 {
+		expanded, err := expandReadiness(unit.Readiness, tctx)
+		if err != nil {
+			return err
+		}
+		encoded, err := encodeReadiness(expanded)
+		if err != nil {
+			return err
+		}
+		annotations[v1.ReadinessAnnotation] = encoded
+	}
+
 	kz := map[string]any{
-		"apiVersion": "kustomize.config.k8s.io/v1beta1",
-		"kind":       "Kustomization",
-		"resources":  resources,
+		"apiVersion":        "kustomize.config.k8s.io/v1beta1",
+		"kind":              "Kustomization",
+		"commonAnnotations": annotations,
+		"resources":         resources,
 	}
 	body, err := yaml.Marshal(kz)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(pkgDir, "kustomization.yaml"), body, 0o644)
+}
+
+// expandReadiness walks each readiness entry and renders its template-bearing
+// fields (Name, Namespace) through the same template context the renderer
+// uses for overlays. Kind and Condition are treated as literals.
+func expandReadiness(checks []v1.ReadinessCheck, tctx templateCtx) ([]v1.ReadinessCheck, error) {
+	out := make([]v1.ReadinessCheck, len(checks))
+	for i, c := range checks {
+		out[i] = c
+		name, err := renderTemplateString("readiness.name", c.Name, tctx)
+		if err != nil {
+			return nil, fmt.Errorf("readiness[%d].name: %w", i, err)
+		}
+		out[i].Name = name
+		if c.Namespace != "" {
+			ns, err := renderTemplateString("readiness.namespace", c.Namespace, tctx)
+			if err != nil {
+				return nil, fmt.Errorf("readiness[%d].namespace: %w", i, err)
+			}
+			out[i].Namespace = ns
+		}
+	}
+	return out, nil
+}
+
+// encodeReadiness serializes readiness checks as compact JSON, suitable for
+// an annotation value.
+func encodeReadiness(checks []v1.ReadinessCheck) (string, error) {
+	b, err := json.Marshal(checks)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

@@ -82,6 +82,26 @@ type PackageRef struct {
 	InstallMethod string         `json:"installMethod,omitempty"`
 	Values        map[string]any `json:"values,omitempty"`
 	Resources     []ResourceRef  `json:"resources,omitempty"`
+	// Bindings wires this consumer package to capability providers. Each
+	// entry materializes a consumer-side resource in the repository this
+	// ref belongs to and a provider-side resource in each env repo that
+	// references the provider's generic repo.
+	Bindings []BindingRef `json:"bindings,omitempty"`
+}
+
+// BindingRef instantiates a provider/consumer capability wiring under the
+// consumer package entry in Provision.
+type BindingRef struct {
+	Name       string         `json:"name"`
+	Capability string         `json:"capability"`
+	Provider   ProviderRef    `json:"provider"`
+	Values     map[string]any `json:"values,omitempty"`
+}
+
+// ProviderRef fully qualifies the provider package instance for a binding.
+type ProviderRef struct {
+	Repo     string `json:"repo"`
+	Instance string `json:"instance"`
 }
 
 // ResourceRef selects one resource template instance for an env repository.
@@ -165,6 +185,22 @@ type ResolvedPackage struct {
 	DependsOn        []string       `json:"dependsOn,omitempty"`
 	ResolvedValues   map[string]any `json:"resolvedValues"`
 	RenderedPaths    RenderedPaths  `json:"renderedPaths"`
+	// ApplyWave is the controller-agnostic apply order, computed from the
+	// dependsOn DAG (roots = 0, otherwise max(deps)+1). Emitted as
+	// `gitups.io/apply-wave` commonAnnotation on the rendered package.
+	ApplyWave int `json:"applyWave"`
+	// Binding, when set, marks this unit as synthesized by a capability
+	// binding rather than an explicit Provision entry.
+	Binding *BindingOrigin `json:"binding,omitempty"`
+}
+
+// BindingOrigin is advisory trace metadata placed on every ResolvedPackage
+// that was materialized by a binding.
+type BindingOrigin struct {
+	Name       string `json:"name"`
+	Capability string `json:"capability"`
+	// Side is "provider" or "consumer".
+	Side string `json:"side"`
 }
 
 type RenderedPaths struct {
@@ -197,6 +233,48 @@ type PackageDefinitionSpec struct {
 	Category         string        `json:"category,omitempty"`
 	DefaultInstall   string        `json:"defaultInstall,omitempty"`
 	DefaultResources []ResourceRef `json:"defaultResources,omitempty"`
+	// Provides declares capabilities this package can fulfill as a provider
+	// when bound to a consumer. Each entry names the resource template
+	// instantiated on the provider side and the value pipe available to
+	// consumers.
+	Provides []CapabilityProvide `json:"provides,omitempty"`
+	// Requires declares capabilities this package consumes. Each entry
+	// names the resource template instantiated on the consumer side and
+	// maps provider exports into that resource template's inputs.
+	Requires []CapabilityRequire `json:"requires,omitempty"`
+}
+
+// CapabilityProvide declares one capability offered by a provider package.
+type CapabilityProvide struct {
+	Capability       string             `json:"capability"`
+	ResourceTemplate string             `json:"resourceTemplate"`
+	Exports          []CapabilityExport `json:"exports,omitempty"`
+}
+
+// CapabilityExport is one value a provider makes available to consumers.
+// From selects the value source and follows a small grammar:
+//   - "input:<key>"    read from the provider's resolved install values
+//   - "binding:<key>"  read from the binding's Values map
+//   - "placeholder"    emit __GITUPS_PLACEHOLDER__ on both sides
+type CapabilityExport struct {
+	Name   string `json:"name"`
+	From   string `json:"from"`
+	Secret bool   `json:"secret,omitempty"`
+}
+
+// CapabilityRequire declares one capability consumed by a consumer package.
+type CapabilityRequire struct {
+	Capability       string              `json:"capability"`
+	ResourceTemplate string              `json:"resourceTemplate"`
+	Consumes         []CapabilityConsume `json:"consumes,omitempty"`
+}
+
+// CapabilityConsume maps a provider export onto an input of the consumer's
+// resource template. Input is the descriptor input key (may be dotted);
+// From is "provider.<exportName>".
+type CapabilityConsume struct {
+	Input string `json:"input"`
+	From  string `json:"from"`
 }
 
 // PackageDescriptor is the on-disk descriptor.yaml shape for an install method
@@ -217,7 +295,54 @@ type PackageDescriptorSpec struct {
 	OLM       *OLMSpec       `json:"olm,omitempty"`
 	Helm      *HelmSpec      `json:"helm,omitempty"`
 	Kustomize *KustomizeSpec `json:"kustomize,omitempty"`
+	// ProvisioningStyle tells gitups how the resource template creates its
+	// cluster object. Values: "crd" (default) emits a custom resource via
+	// the chosen renderer; "script" ships scripts/provision.sh (and
+	// optional scripts/teardown.sh) that gitups wraps in a deterministic
+	// Job manifest at render time.
+	ProvisioningStyle string `json:"provisioningStyle,omitempty"`
+	// ScriptImage is the container image gitups runs the provisioning
+	// script in. Required when ProvisioningStyle is "script"; must be
+	// pinned (tag or digest), never "latest". Gitups owns the Job shape
+	// around it.
+	ScriptImage string `json:"scriptImage,omitempty"`
+	// ScriptServiceAccount optionally names a ServiceAccount for the
+	// generated Job. Empty defaults to "default". Packages that need
+	// elevated RBAC author a ServiceAccount + Role/RoleBinding alongside
+	// their descriptor and reference it here.
+	ScriptServiceAccount string `json:"scriptServiceAccount,omitempty"`
+	// Readiness lists cluster objects that must reach the named condition
+	// before units depending on this one are applied. Static; never read
+	// from the cluster during render. Template fields may reference
+	// .Values.
+	Readiness []ReadinessCheck `json:"readiness,omitempty"`
 }
+
+// ReadinessCheck references a Kubernetes object that must satisfy the named
+// Condition type before dependent units apply. Used to compute apply waves
+// and emit `gitups.io/readiness` annotations.
+type ReadinessCheck struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Condition string `json:"condition"`
+}
+
+// ProvisioningStyle constants.
+const (
+	ProvisioningStyleCRD    = "crd"
+	ProvisioningStyleScript = "script"
+)
+
+// ApplyWaveAnnotation is the controller-agnostic sync-wave annotation
+// emitted on every rendered manifest. Controller packages translate this
+// into their native sync-wave key via an overlay.
+const ApplyWaveAnnotation = "gitups.io/apply-wave"
+
+// ReadinessAnnotation records the readiness checks (JSON-encoded) a
+// rendered object relies on. Advisory — consumed by `gitups wait` and any
+// controller overlay that wants to emit native health checks.
+const ReadinessAnnotation = "gitups.io/readiness"
 
 type OLMSpec struct {
 	Package             string `json:"package"`

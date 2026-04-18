@@ -64,7 +64,7 @@ gitops-workspace/
     CLAUDE.md              # pointer for Claude-style agents
     agents/
       references/          # long-lived domain rules
-      plans/               # local scratch; do not read unless user cites path
+      plans/               # user-requested markdown plans; read only when cited
     bin/                   # ignored; make build writes bin/gitups
     tmp/                   # ignored scratch
     cmd/ internal/ api/ ...
@@ -91,6 +91,9 @@ with a path such as `../../../gitups-packages`.
   for the domains you touch before coding.
 - `agents/references/README.md` is the index; update it when reference files
   are added, renamed, or retired.
+- When the user asks for help thinking through or defining a plan, save the
+  resulting plan as a Markdown file under `agents/plans/` with a concise
+  kebab-case filename tied to the request.
 - Never read `agents/plans/*` unless the user cites a specific path in the
   current request.
 
@@ -137,6 +140,17 @@ After coding:
 - Update relevant references if the task created durable guidance.
 - Edit this file only for maintainer-approved invariant or workflow changes.
 - Flag any reference/code mismatch you corrected.
+- For a successful standard request handoff, output only one recommended commit
+  subject line using Conventional Commits:
+  `<type>(<scope>): <description>`. Use a scope when obvious
+  (package/module/folder). Keep it short, with a maximum of 72 characters. Do
+  not append summaries, file lists, verification details, or commit questions.
+  If request processing is blocked or required verification cannot complete,
+  report the blocker instead.
+- Allowed commit types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`,
+  `build`, `ci`, `chore`, `revert`.
+- Examples: `docs(agents): shorten standard handoff`; `Blocked: go test -race
+  ./... could not complete`.
 
 ## 6. Tooling Conventions
 

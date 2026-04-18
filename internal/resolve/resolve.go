@@ -90,6 +90,17 @@ func Expand(p *v1.Provision, cat *catalog.Catalog, opts Options) (*v1.FullProvis
 		fp.Spec.Packages = append(fp.Spec.Packages, rp)
 		placeholderList = append(placeholderList, phs...)
 	}
+
+	bindingPhs, err := resolveBindings(p, cat, envKey, fp, priorByInstance, opts.Force)
+	if err != nil {
+		return nil, err
+	}
+	placeholderList = append(placeholderList, bindingPhs...)
+
+	if err := computeApplyWaves(fp); err != nil {
+		return nil, err
+	}
+
 	sort.SliceStable(placeholderList, func(i, j int) bool { return placeholderList[i].Path < placeholderList[j].Path })
 	fp.Spec.Placeholders = placeholderList
 	return fp, nil
@@ -108,6 +119,13 @@ type ref struct {
 	unit             catalog.Unit
 	values           map[string]any
 	roleOverride     string
+	// binding-only: extra reason text applied to placeholders at the given
+	// input-key paths, sensitivity flag overrides, a ResolvedPackage.Binding
+	// origin marker, and extra dependsOn strings to append.
+	extraReasons   map[string]string
+	extraSensitive map[string]bool
+	binding        *v1.BindingOrigin
+	extraDependsOn []string
 }
 
 func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, []v1.ResolvedRepository, error) {
@@ -379,6 +397,16 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 	case v1.UnitTypeResource:
 		renderedDir = "packages/" + r.packageInstance + "/resources/" + r.resourceTemplate + "/" + r.resourceName
 	}
+	for k, v := range r.extraReasons {
+		reasons[k] = v
+	}
+	for k, v := range r.extraSensitive {
+		sensitive[k] = v
+	}
+
+	dependsOn := append([]string(nil), desc.DependsOn...)
+	dependsOn = append(dependsOn, r.extraDependsOn...)
+
 	rp := v1.ResolvedPackage{
 		Template:         r.template,
 		PackageInstance:  r.packageInstance,
@@ -390,9 +418,10 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 		Instance:         r.instance,
 		Role:             role,
 		Renderer:         desc.Renderer,
-		DependsOn:        append([]string(nil), desc.DependsOn...),
+		DependsOn:        dependsOn,
 		ResolvedValues:   values,
 		RenderedPaths:    v1.RenderedPaths{Repo: r.repository, Dir: renderedDir},
+		Binding:          r.binding,
 	}
 
 	phs := placeholders.Scan(r.instance, values, reasons, sensitive)

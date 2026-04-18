@@ -27,6 +27,25 @@ catalog.
 - Package README files should list non-obvious inputs, placeholders, install
   methods, resource templates, and any reason for not using the preferred
   install method.
+- When a package fulfills a capability, declare `spec.provides[]`; when it
+  consumes one, declare `spec.requires[]`. The declared `resourceTemplate`
+  must exist under `resources/`.
+- **Operator-CRD-first for provide/require resource templates.** If the
+  package's operator exposes a CR for the capability's object (argocd
+  consumes a labeled `Secret` for repo connections; gitea-operator has a
+  user/repo CRD when pinned), the resource template MUST emit that CR via
+  `renderer: raw` + overlays (or kustomize). Script-style is the fallback
+  for packages without a stable operator CRD at pin time.
+- **Script fallback is gitups-wrapped.** Set `spec.provisioningStyle:
+  script` + pin `spec.scriptImage` (never `:latest`) and ship
+  `scripts/provision.sh`. Gitups owns the Job shape, the ConfigMap
+  layout, and the `/etc/gitups/values.json` mount — package authors only
+  write the script body. Use `GITUPS_VALUES_FILE`, `GITUPS_INSTANCE`,
+  and `GITUPS_NAMESPACE` inside the script.
+- Declare `spec.readiness[]` on descriptors whose on-cluster object must
+  become `Available`/`Ready` before dependent units apply.
+  `name`/`namespace` may template `.Values`; gitups never reads the
+  cluster during render.
 
 ## Layout
 
@@ -125,6 +144,49 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Values.namespace }}
+```
+
+Capability provider with operator-CRD resource template:
+
+```yaml
+# package.yaml
+spec:
+  provides:
+    - capability: git-provider
+      resourceTemplate: user
+      exports:
+        - {name: url,      from: input:rootURL}
+        - {name: username, from: binding:username}
+        - {name: token,    from: placeholder, secret: true}
+```
+
+Script-fallback provider (no operator CRD at pin time):
+
+```yaml
+# resources/user/descriptor.yaml
+spec:
+  renderer: raw
+  provisioningStyle: script
+  scriptImage: alpine:3.20.3       # pinned; never :latest
+  inputs:
+    - {name: namespace, type: string, default: gitea}
+    - {name: url,       type: string, required: true}
+    - {name: username,  type: string, required: true}
+    - {name: token,     type: string, required: true, sensitive: true}
+  dependsOn: [gitea/install]
+  readiness:
+    - kind: Deployment
+      namespace: '{{ .Values.namespace }}'
+      name: gitea
+      condition: Available
+```
+
+```sh
+# resources/user/scripts/provision.sh (package-authored; gitups wraps in a Job)
+#!/bin/sh
+set -eu
+VALUES="$GITUPS_VALUES_FILE"
+# ... use jq / curl against the service API
 ```
 
 ## Gotchas
