@@ -4,4 +4,4 @@ Repo rendered by gitups from FullProvision "dsv".
 
 ## Packages
 
-- **metallb-helm** (local/metallb, renderer=helm, role=workload) → `packages/metallb/helm`
+- **metallb-config-default** (local/metallb, resource, renderer=raw, role=workload) -> `packages/metallb/resources/config/default`

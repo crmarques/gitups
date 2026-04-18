@@ -13,10 +13,14 @@ import (
 func loadFixtures(t *testing.T) (*v1.Provision, *catalog.Catalog) {
 	t.Helper()
 	repoRoot, _ := filepath.Abs("../..")
-	prov, err := load.Provision(filepath.Join(repoRoot, "tests/e2e/provision-dsv.yaml"))
+	prov, err := load.Provision(filepath.Join(repoRoot, "tests/e2e/dsv/provision.yaml"))
 	if err != nil {
 		t.Fatalf("load provision: %v", err)
 	}
+	// baseDir stays at tests/e2e so the Provision's relative source path
+	// (../../../gitups-packages) resolves to the sibling catalog. The
+	// provision fixture itself moved one level deeper; its bytes are
+	// identical to what the e2e run.sh copies into gitups-output-dir/dsv/.
 	baseDir := filepath.Join(repoRoot, "tests/e2e")
 	cat, err := catalog.Build(prov.Spec.Sources, baseDir)
 	if err != nil {

@@ -1,0 +1,17 @@
+apiVersion: v1
+data:
+  values.json: |-
+    {
+      "namespace": "gitea",
+      "token": "e2e-argocd-bot-token",
+      "url": "http://gitea.gitea.svc.cluster.local:3000/",
+      "username": "argocd-bot"
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: script-provisioner
+    app.kubernetes.io/instance: gitea-user-argocd-gitea-bot-support-services-dev
+    app.kubernetes.io/managed-by: gitups
+  name: gitea-user-argocd-gitea-bot-support-services-dev-values
+  namespace: gitea

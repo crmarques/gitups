@@ -1,0 +1,55 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: basic-binding
+spec:
+  envKey: dev
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages
+
+  repositories:
+    - name: basic-infra
+      type: k8s-gitops-generic
+      packages:
+        - template: local/olm
+        - template: local/nginx-ingress
+        - template: local/metallb
+          installMethod: helm
+
+    - name: basic-infra-{{.Env}}
+      type: k8s-gitops-env
+      repoRef:
+        name: basic-infra
+
+    - name: support-services
+      type: k8s-gitops-generic
+      packages:
+        - template: local/gitea
+
+    - name: support-services-{{.Env}}
+      type: k8s-gitops-env
+      repoRef:
+        name: support-services
+
+    - name: gitops-controllers
+      type: k8s-gitops-generic
+      packages:
+        - template: local/argocd
+          installMethod: helm
+
+    - name: gitops-controllers-{{.Env}}
+      type: k8s-gitops-env
+      repoRef:
+        name: gitops-controllers
+      packages:
+        - template: local/argocd
+          bindings:
+            - name: argocd-gitea-bot
+              capability: git-provider
+              provider:
+                repo: support-services
+                instance: gitea
+              values:
+                username: argocd-bot

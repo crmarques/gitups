@@ -1,0 +1,12 @@
+injector:
+  enabled: false
+ui:
+  enabled: true
+server:
+  dev:
+    enabled: true
+    devRootToken: gitups-e2e-root
+  ha:
+    enabled: false
+  standalone:
+    enabled: false

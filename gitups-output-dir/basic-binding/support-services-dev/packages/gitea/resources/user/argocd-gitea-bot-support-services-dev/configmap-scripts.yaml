@@ -1,0 +1,56 @@
+apiVersion: v1
+data:
+  provision.sh: |
+    #!/bin/sh
+    # Create (or update) a gitea user with the token provided by the binding.
+    # Values are injected at $GITUPS_VALUES_FILE as JSON. Gitups wraps this script
+    # in a deterministic Job manifest; the Job's shape (labels, volume mounts,
+    # environment variables) is gitups-owned and not authored here.
+    set -eu
+
+    apk add --no-cache curl jq >/dev/null
+
+    VALUES="${GITUPS_VALUES_FILE:?gitups values file path missing}"
+    URL=$(jq -r '.url' "$VALUES")
+    USERNAME=$(jq -r '.username' "$VALUES")
+    TOKEN=$(jq -r '.token' "$VALUES")
+
+    if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+      echo "provision.sh: url is required" >&2
+      exit 1
+    fi
+    if [ -z "$USERNAME" ] || [ "$USERNAME" = "null" ]; then
+      echo "provision.sh: username is required" >&2
+      exit 1
+    fi
+    if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+      echo "provision.sh: token is required (placeholder not filled)" >&2
+      exit 1
+    fi
+
+    # Idempotent create: ignore 422 if the user already exists. Gitea's bootstrap
+    # admin credentials must be available to the Job (wire them via a Secret
+    # mounted into the Job by an overlay package author).
+    status=$(curl -s -o /tmp/resp.json -w '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -u "${GITEA_ADMIN_USERNAME:?}:${GITEA_ADMIN_PASSWORD:?}" \
+      -X POST "${URL%/}/api/v1/admin/users" \
+      -d "$(jq -n --arg u "$USERNAME" --arg t "$TOKEN" '{login_name:$u, username:$u, password:$t, email:($u+"@example.invalid"), must_change_password:false}')")
+
+    case "$status" in
+      2*) echo "user $USERNAME created" ;;
+      422) echo "user $USERNAME already exists (422); continuing" ;;
+      *)
+        echo "provision.sh: gitea user create failed with HTTP $status" >&2
+        cat /tmp/resp.json >&2
+        exit 1
+        ;;
+    esac
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: script-provisioner
+    app.kubernetes.io/instance: gitea-user-argocd-gitea-bot-support-services-dev
+    app.kubernetes.io/managed-by: gitups
+  name: gitea-user-argocd-gitea-bot-support-services-dev-scripts
+  namespace: gitea

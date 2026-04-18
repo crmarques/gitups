@@ -4,5 +4,5 @@ Repo rendered by gitups from FullProvision "dsv".
 
 ## Packages
 
-- **argocd-operator** (local/argocd, renderer=olm, role=controller) → `packages/argocd/operator`
-- **declarest-install** (local/declarest, renderer=raw, role=controller) → `packages/declarest/install`
+- **argocd** (local/argocd, install, renderer=olm, role=controller) -> `packages/argocd/install/olm`
+- **declarest** (local/declarest, install, renderer=raw, role=controller) -> `packages/declarest/install/raw`

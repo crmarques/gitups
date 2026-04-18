@@ -36,21 +36,25 @@ func (stubHelmRunner) Template(ctx context.Context, req render.HelmTemplateReque
 }
 
 // TestRenderRuns drives Render end-to-end against the pinned
-// full-provision-dsv-filled.yaml fixture and the sibling gitups-packages
-// catalog. It asserts only that render completes; output shape is covered by
-// per-renderer unit tests so the fixture doesn't have to track every chart
-// stub byte-for-byte.
+// tests/e2e/dsv/full-provision-filled.yaml fixture and the sibling
+// gitups-packages catalog. It asserts only that render completes; output
+// shape is covered by per-renderer unit tests so the fixture doesn't have
+// to track every chart stub byte-for-byte.
 func TestRenderRuns(t *testing.T) {
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fullProvPath := filepath.Join(repoRoot, "tests/e2e/full-provision-dsv-filled.yaml")
+	fullProvPath := filepath.Join(repoRoot, "tests/e2e/dsv/full-provision-filled.yaml")
 	fp, err := load.FullProvision(fullProvPath)
 	if err != nil {
 		t.Fatalf("load full-provision: %v", err)
 	}
-	baseDir := filepath.Dir(fullProvPath)
+	// baseDir stays at tests/e2e so the fixture's relative source path
+	// (../../../gitups-packages) resolves to the sibling catalog; the
+	// fixture itself lives one level deeper but is byte-identical to the
+	// workspace copy that e2e runs against.
+	baseDir := filepath.Join(repoRoot, "tests/e2e")
 	cat, err := catalog.Build(fp.Spec.Sources, baseDir)
 	if err != nil {
 		t.Fatalf("build catalog: %v", err)

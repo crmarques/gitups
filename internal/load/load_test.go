@@ -11,7 +11,7 @@ import (
 
 func TestProvisionLoads(t *testing.T) {
 	repoRoot, _ := filepath.Abs("../..")
-	p, err := load.Provision(filepath.Join(repoRoot, "tests/e2e/provision-dsv.yaml"))
+	p, err := load.Provision(filepath.Join(repoRoot, "tests/e2e/dsv/provision.yaml"))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestProvisionLoads(t *testing.T) {
 
 func TestFullProvisionLoads(t *testing.T) {
 	repoRoot, _ := filepath.Abs("../..")
-	fp, err := load.FullProvision(filepath.Join(repoRoot, "tests/e2e/full-provision-dsv-filled.yaml"))
+	fp, err := load.FullProvision(filepath.Join(repoRoot, "tests/e2e/dsv/full-provision-filled.yaml"))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestFullProvisionLoads(t *testing.T) {
 
 func TestDetectKind(t *testing.T) {
 	repoRoot, _ := filepath.Abs("../..")
-	tm, err := load.DetectKind(filepath.Join(repoRoot, "tests/e2e/provision-dsv.yaml"))
+	tm, err := load.DetectKind(filepath.Join(repoRoot, "tests/e2e/dsv/provision.yaml"))
 	if err != nil {
 		t.Fatalf("detect: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestDetectKind(t *testing.T) {
 // ProvisionResolved, with a nil ExtendedFrom trace.
 func TestProvisionResolvedNoExtends(t *testing.T) {
 	repoRoot, _ := filepath.Abs("../..")
-	path := filepath.Join(repoRoot, "tests/e2e/provision-dsv.yaml")
+	path := filepath.Join(repoRoot, "tests/e2e/dsv/provision.yaml")
 	p, extFrom, err := load.ProvisionResolved(path)
 	if err != nil {
 		t.Fatalf("resolved: %v", err)

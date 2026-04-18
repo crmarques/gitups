@@ -1,79 +1,84 @@
 #!/usr/bin/env bash
+# Dispatcher: runs one named e2e case. Each case owns a subdirectory here
+# with its own run.sh, fixtures, and README. Use --list to enumerate cases.
+#
+# Usage:
+#   tests/e2e/run.sh [--case <name>] [--list] [-- extra args...]
+#
+# When --case is omitted the "dsv" case runs (back-compat with the pre-split
+# layout). Extra args after the case name are forwarded to the per-case
+# run.sh. Per-case scripts are also runnable directly
+# (e.g. tests/e2e/basic-binding/run.sh) for developers iterating on a single
+# case without the dispatcher.
+
 set -euo pipefail
 
-env_name="${1:-dsv}"
-kubectl_context="${2:-${KUBE_CONTEXT:-kind-${env_name}}}"
-output_dir_arg="${3:-${GITUPS_OUTPUT_DIR:-gitups-output-dir}}"
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
-bin="${repo_root}/bin/gitups"
 
-case "${output_dir_arg}" in
-  /*) output_dir="${output_dir_arg}" ;;
-  *) output_dir="${repo_root}/${output_dir_arg}" ;;
-esac
+list_cases() {
+  # A case is any immediate subdir with an executable run.sh.
+  for d in "${script_dir}"/*/; do
+    [[ -d "${d}" ]] || continue
+    name=$(basename "${d}")
+    [[ -x "${d}run.sh" ]] || continue
+    printf '%s\n' "${name}"
+  done
+}
 
-workspace="${output_dir}/${env_name}"
-provision_src="${script_dir}/provision-${env_name}.yaml"
-metallb_pool="${METALLB_ADDRESS_POOL:-172.18.255.200-172.18.255.250}"
-gitops_repo_url="${GITOPS_REPO_URL:-https://example.invalid/gitops/gitops-controllers-${env_name}.git}"
-vault_root_token="${VAULT_DEV_ROOT_TOKEN:-gitups-e2e-root}"
-wait_timeout="${GITUPS_E2E_WAIT_TIMEOUT:-10m}"
+case_name="dsv"
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --case)
+      [[ $# -ge 2 ]] || { printf 'tests/e2e: --case requires a value\n' >&2; exit 2; }
+      case_name="$2"
+      shift 2
+      ;;
+    --case=*)
+      case_name="${1#--case=}"
+      shift
+      ;;
+    --list)
+      list_cases
+      exit 0
+      ;;
+    --)
+      shift
+      args+=("$@")
+      break
+      ;;
+    -h|--help)
+      cat <<'EOF' >&2
+Usage: tests/e2e/run.sh [--case <name>] [--list] [-- extra args...]
 
-if [[ ! -x "${bin}" ]]; then
-  printf 'tests/e2e: %s is missing; run make build first\n' "${bin}" >&2
-  exit 1
-fi
-if [[ ! -f "${provision_src}" ]]; then
-  printf 'tests/e2e: provision fixture not found: %s\n' "${provision_src}" >&2
-  exit 1
-fi
+Options:
+  --case <name>   Select a case subdirectory (default: dsv)
+  --list          List available cases and exit
+  --help          Show this message
 
-for tool in kubectl helm kustomize go; do
-  if ! command -v "${tool}" >/dev/null 2>&1; then
-    printf 'tests/e2e: required tool not found in PATH: %s\n' "${tool}" >&2
-    exit 1
-  fi
+Cases are discovered as immediate subdirectories containing an executable
+run.sh. Arguments after `--` are forwarded to the per-case run.sh.
+EOF
+      exit 0
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
 done
 
-if [[ "${GITUPS_E2E_APPLY:-true}" == "true" ]]; then
-  kubectl --context "${kubectl_context}" cluster-info >/dev/null
+case_dir="${script_dir}/${case_name}"
+case_script="${case_dir}/run.sh"
+if [[ ! -d "${case_dir}" ]]; then
+  printf 'tests/e2e: case %q not found at %s\n' "${case_name}" "${case_dir}" >&2
+  printf 'available cases:\n' >&2
+  list_cases | sed 's/^/  /' >&2
+  exit 1
+fi
+if [[ ! -x "${case_script}" ]]; then
+  printf 'tests/e2e: %s is not executable\n' "${case_script}" >&2
+  exit 1
 fi
 
-rm -rf "${workspace}"
-mkdir -p "${workspace}"
-cp "${provision_src}" "${workspace}/provision.yaml"
-
-"${bin}" check "${env_name}" --output-dir "${output_dir}"
-"${bin}" expand "${env_name}" --output-dir "${output_dir}" --force
-go run "${script_dir}/fill_placeholders.go" \
-  "${workspace}/full-provision.yaml" \
-  "${env_name}" \
-  "${metallb_pool}" \
-  "${gitops_repo_url}" \
-  "${vault_root_token}"
-"${bin}" check "${env_name}" --output-dir "${output_dir}"
-"${bin}" generate "${env_name}" --output-dir "${output_dir}" --context "${env_name}" --prune
-"${bin}" status "${env_name}" --output-dir "${output_dir}"
-
-expected_repos=(
-  "basic-infra"
-  "basic-infra-${env_name}"
-  "support-services"
-  "support-services-${env_name}"
-  "gitops-controllers"
-  "gitops-controllers-${env_name}"
-)
-for repo in "${expected_repos[@]}"; do
-  test -d "${workspace}/${repo}"
-done
-
-if [[ "${GITUPS_E2E_APPLY:-true}" == "true" ]]; then
-  "${bin}" apply "${env_name}" --output-dir "${output_dir}" --to "${kubectl_context}" --wait-crds
-  "${bin}" wait "${env_name}" --output-dir "${output_dir}" --to "${kubectl_context}" --timeout "${wait_timeout}"
-  kubectl --context "${kubectl_context}" get namespace \
-    olm metallb-system ingress-nginx vault gitea keycloak istio-system argocd declarest-system >/dev/null
-fi
-
-printf 'tests/e2e: completed env=%s output=%s context=%s\n' "${env_name}" "${workspace}" "${kubectl_context}" >&2
+exec "${case_script}" "${args[@]}"

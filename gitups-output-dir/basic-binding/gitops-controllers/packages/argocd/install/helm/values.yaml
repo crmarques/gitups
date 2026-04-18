@@ -1,0 +1,5 @@
+global:
+  revisionHistoryLimit: 3
+server:
+  ingress:
+    enabled: false
