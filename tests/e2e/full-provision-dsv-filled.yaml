@@ -1,0 +1,393 @@
+apiVersion: gitups/v1alpha1
+kind: FullProvision
+metadata:
+  name: dsv
+spec:
+  packages:
+  - installMethod: raw
+    instance: olm
+    packageInstance: olm
+    renderedPaths:
+      dir: packages/olm/install/raw
+      repo: basic-infra
+    renderer: raw
+    repository: basic-infra
+    resolvedValues:
+      catalog:
+        image:
+          digest: 9fbfd70da2cedae8754fb8ed1b4d9c55733b5a7e06685d34aa415063cd964743
+          repository: quay.io/operatorhubio/catalog
+      images:
+        configmapOperatorRegistry:
+          digest: 3e259e1e339ad9d388cb611745312ae1c0390c9338bfd6d9965811e1978d9d1c
+          repository: quay.io/operator-framework/configmap-operator-registry
+        olm:
+          digest: 36563571fdddf266ab871efcec0fbd98d3b74bff14506718aa79f9853712d640
+          repository: quay.io/operator-framework/olm
+        opm:
+          digest: f778630c62ee19b0aeda9969c2488de88ce84d5b1d040c97a33f9f38832bab14
+          repository: quay.io/operator-framework/opm
+      namespace: olm
+      podSecurity:
+        version: v1.35
+      release: v0.42.0
+    role: controller
+    template: local/olm
+    unitType: install
+  - installMethod: helm
+    instance: metallb
+    packageInstance: metallb
+    renderedPaths:
+      dir: packages/metallb/install/helm
+      repo: basic-infra
+    renderer: helm
+    repository: basic-infra
+    resolvedValues:
+      appVersion: v0.15.3
+      chart:
+        version: 0.15.3
+      namespace: metallb-system
+    role: workload
+    template: local/metallb
+    unitType: install
+  - dependsOn:
+    - metallb/install
+    installMethod: helm
+    instance: nginx-ingress
+    packageInstance: nginx-ingress
+    renderedPaths:
+      dir: packages/nginx-ingress/install/helm
+      repo: basic-infra
+    renderer: helm
+    repository: basic-infra
+    resolvedValues:
+      appVersion: 1.15.1
+      chart:
+        version: 4.15.1
+      controller:
+        ingressClassResource:
+          default: true
+          name: nginx
+        service:
+          type: LoadBalancer
+      namespace: ingress-nginx
+    role: workload
+    template: local/nginx-ingress
+    unitType: install
+  - dependsOn:
+    - metallb/install
+    instance: metallb-config-default
+    packageInstance: metallb
+    renderedPaths:
+      dir: packages/metallb/resources/config/default
+      repo: basic-infra-dsv
+    renderer: raw
+    repository: basic-infra-dsv
+    resolvedValues:
+      addressPools:
+      - cidrs:
+        - 172.18.255.200-172.18.255.250
+        name: default
+      namespace: metallb-system
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/metallb
+    unitType: resource
+  - installMethod: helm
+    instance: vault
+    packageInstance: vault
+    renderedPaths:
+      dir: packages/vault/install/helm
+      repo: support-services
+    renderer: helm
+    repository: support-services
+    resolvedValues:
+      appVersion: 1.21.2
+      chart:
+        version: 0.32.0
+      injector:
+        enabled: false
+      namespace: vault
+      server:
+        dev:
+          devRootToken: gitups-e2e-root
+          enabled: true
+        ha:
+          enabled: false
+        standalone:
+          enabled: false
+      ui:
+        enabled: true
+    role: workload
+    template: local/vault
+    unitType: install
+  - installMethod: helm
+    instance: gitea
+    packageInstance: gitea
+    renderedPaths:
+      dir: packages/gitea/install/helm
+      repo: support-services
+    renderer: helm
+    repository: support-services
+    resolvedValues:
+      appVersion: 1.25.5
+      chart:
+        version: 12.5.3
+      namespace: gitea
+      persistence:
+        enabled: false
+      postgresql:
+        enabled: false
+      postgresql-ha:
+        enabled: false
+      redis-cluster:
+        enabled: false
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    role: workload
+    template: local/gitea
+    unitType: install
+  - dependsOn:
+    - olm/install
+    installMethod: olm
+    instance: keycloak
+    packageInstance: keycloak
+    renderedPaths:
+      dir: packages/keycloak/install/olm
+      repo: support-services
+    renderer: olm
+    repository: support-services
+    resolvedValues:
+      namespace: keycloak
+      olm:
+        startingCSV: keycloak-operator.v26.5.0
+    role: workload
+    template: local/keycloak
+    unitType: install
+  - installMethod: helm
+    instance: service-mesh
+    packageInstance: service-mesh
+    renderedPaths:
+      dir: packages/service-mesh/install/helm
+      repo: support-services
+    renderer: helm
+    repository: support-services
+    resolvedValues:
+      appVersion: 1.29.2
+      chart:
+        version: 1.29.2
+      namespace: istio-system
+    role: workload
+    template: local/service-mesh
+    unitType: install
+  - dependsOn:
+    - vault/install
+    instance: vault-config-default
+    packageInstance: vault
+    renderedPaths:
+      dir: packages/vault/resources/config/default
+      repo: support-services-dsv
+    renderer: raw
+    repository: support-services-dsv
+    resolvedValues:
+      namespace: vault
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/vault
+    unitType: resource
+  - dependsOn:
+    - gitea/install
+    instance: gitea-config-default
+    packageInstance: gitea
+    renderedPaths:
+      dir: packages/gitea/resources/config/default
+      repo: support-services-dsv
+    renderer: raw
+    repository: support-services-dsv
+    resolvedValues:
+      namespace: gitea
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/gitea
+    unitType: resource
+  - dependsOn:
+    - keycloak/install
+    instance: keycloak-config-default
+    packageInstance: keycloak
+    renderedPaths:
+      dir: packages/keycloak/resources/config/default
+      repo: support-services-dsv
+    renderer: raw
+    repository: support-services-dsv
+    resolvedValues:
+      namespace: keycloak
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/keycloak
+    unitType: resource
+  - dependsOn:
+    - service-mesh/install
+    instance: service-mesh-istiod-default
+    packageInstance: service-mesh
+    renderedPaths:
+      dir: packages/service-mesh/resources/istiod/default
+      repo: support-services-dsv
+    renderer: helm
+    repository: support-services-dsv
+    resolvedValues:
+      appVersion: 1.29.2
+      chart:
+        version: 1.29.2
+      namespace: istio-system
+      replicaCount: 1
+    resourceName: default
+    resourceTemplate: istiod
+    role: workload
+    template: local/service-mesh
+    unitType: resource
+  - dependsOn:
+    - service-mesh/install
+    instance: service-mesh-config-default
+    packageInstance: service-mesh
+    renderedPaths:
+      dir: packages/service-mesh/resources/config/default
+      repo: support-services-dsv
+    renderer: raw
+    repository: support-services-dsv
+    resolvedValues:
+      meshID: mesh-dsv
+      namespace: istio-system
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/service-mesh
+    unitType: resource
+  - dependsOn:
+    - olm/install
+    installMethod: olm
+    instance: argocd
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/install/olm
+      repo: gitops-controllers
+    renderer: olm
+    repository: gitops-controllers
+    resolvedValues:
+      namespace: argocd
+      olm:
+        startingCSV: argocd-operator.v0.17.0
+    role: controller
+    template: local/argocd
+    unitType: install
+  - installMethod: raw
+    instance: declarest
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/install/raw
+      repo: gitops-controllers
+    renderer: raw
+    repository: gitops-controllers
+    resolvedValues:
+      image:
+        repository: ghcr.io/crmarques/declarest
+        tag: v0.3.8
+      namespace: declarest-system
+      replicas: 1
+    role: controller
+    template: local/declarest
+    unitType: install
+  - dependsOn:
+    - argocd/install
+    instance: argocd-instance-default
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/resources/instance/default
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      instance: argocd
+      namespace: argocd
+    resourceName: default
+    resourceTemplate: instance
+    role: controller
+    template: local/argocd
+    unitType: resource
+  - dependsOn:
+    - argocd/resources/instance
+    instance: argocd-applications-root
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/resources/applications/root
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      namespace: argocd
+      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
+      targetRevision: HEAD
+    resourceName: root
+    resourceTemplate: applications
+    role: controller
+    template: local/argocd
+    unitType: resource
+  - dependsOn:
+    - declarest/install
+    instance: declarest-config-default
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/config/default
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      namespace: declarest-system
+      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
+      targetRevision: HEAD
+    resourceName: default
+    resourceTemplate: config
+    role: controller
+    template: local/declarest
+    unitType: resource
+  placeholders: []
+  repositories:
+  - description: Cluster-wide infra installed up-front.
+    name: basic-infra
+    type: k8s-gitops-generic
+  - description: Env-specific infra config.
+    name: basic-infra-dsv
+    repoRef:
+      commit: v0.0.1
+      name: basic-infra
+    type: k8s-gitops-env
+  - description: Shared support service installs.
+    name: support-services
+    type: k8s-gitops-generic
+  - description: Env-specific support service configuration.
+    name: support-services-dsv
+    repoRef:
+      commit: v0.0.1
+      name: support-services
+    type: k8s-gitops-env
+  - description: Cluster-wide GitOps controller configuration.
+    name: gitops-controllers
+    type: k8s-gitops-generic
+  - description: Env-specific GitOps controller configuration.
+    name: gitops-controllers-dsv
+    repoRef:
+      commit: v0.0.1
+      name: gitops-controllers
+    type: k8s-gitops-env
+  repository:
+    layout: split
+    outputPath: ./out/dsv
+  sourceProvisionRef:
+    name: dsv
+  sources:
+  - name: local
+    path: ../../../gitups-packages
+    type: filesystem

@@ -1,0 +1,20 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: dsv
+spec:
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages
+  packages:
+    - template: local/olm
+    - template: local/metallb
+      components: [helm]
+    - template: local/nginx-ingress
+    - template: local/vault
+    - template: local/gitea
+    - template: local/keycloak
+    - template: local/service-mesh
+    - template: local/argocd
+    - template: local/declarest

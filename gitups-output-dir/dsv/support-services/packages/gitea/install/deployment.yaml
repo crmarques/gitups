@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: gitea
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/part-of: support-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitea
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitea
+        app.kubernetes.io/part-of: support-services
+    spec:
+      containers:
+        - name: gitea
+          image: gitea/gitea:1.22.3-rootless
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GITEA__database__DB_TYPE
+              value: sqlite3
+            - name: GITEA__repository__DEFAULT_BRANCH
+              value: main
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__server__ROOT_URL
+              value: "http://gitea.gitea.svc.cluster.local:3000/"
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: ssh
+              containerPort: 2222
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
+            - name: config
+              mountPath: /etc/gitea
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+

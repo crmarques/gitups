@@ -1,0 +1,266 @@
+apiVersion: gitups/v1alpha1
+kind: FullProvision
+metadata:
+  name: dsv
+spec:
+  packages:
+  - component: crds
+    instance: olm-crds
+    renderedPaths:
+      dir: packages/olm/crds
+      repo: basic-infra
+    renderer: raw
+    resolvedValues:
+      release: v0.30.0
+    role: controller
+    targetRepo: basic-infra
+    template: local/olm
+  - component: runtime
+    dependsOn:
+    - olm/crds
+    instance: olm-runtime
+    renderedPaths:
+      dir: packages/olm/runtime
+      repo: basic-infra
+    renderer: raw
+    resolvedValues:
+      namespace: olm
+      release: v0.30.0
+    role: controller
+    targetRepo: basic-infra
+    template: local/olm
+  - component: helm
+    instance: metallb-helm
+    renderedPaths:
+      dir: packages/metallb/helm
+      repo: basic-infra-dsv
+    renderer: helm
+    resolvedValues:
+      addressPools:
+      - cidrs:
+        - 172.18.255.200-172.18.255.250
+        name: default
+      chart:
+        version: 0.14.8
+      namespace: metallb-system
+    role: workload
+    targetRepo: basic-infra-dsv
+    template: local/metallb
+  - dependsOn:
+    - metallb/operator
+    instance: nginx-ingress
+    renderedPaths:
+      dir: packages/nginx-ingress
+      repo: basic-infra
+    renderer: helm
+    resolvedValues:
+      chart:
+        version: 4.11.3
+      controller:
+        ingressClassResource:
+          default: true
+          name: nginx
+        service:
+          type: LoadBalancer
+      namespace: ingress-nginx
+    role: workload
+    targetRepo: basic-infra
+    template: local/nginx-ingress
+  - component: install
+    dependsOn:
+    - olm
+    instance: vault-install
+    renderedPaths:
+      dir: packages/vault/install
+      repo: support-services
+    renderer: raw
+    resolvedValues:
+      devRootToken: gitups-e2e-root
+      image: hashicorp/vault:1.17.6
+      namespace: vault
+      replicas: 1
+      ui:
+        enabled: true
+    role: workload
+    targetRepo: support-services
+    template: local/vault
+  - component: config
+    dependsOn:
+    - vault/install
+    instance: vault-config
+    renderedPaths:
+      dir: packages/vault/config
+      repo: support-services-dsv
+    renderer: raw
+    resolvedValues:
+      namespace: vault
+    role: workload
+    targetRepo: support-services-dsv
+    template: local/vault
+  - component: install
+    instance: gitea-install
+    renderedPaths:
+      dir: packages/gitea/install
+      repo: support-services
+    renderer: raw
+    resolvedValues:
+      image: gitea/gitea:1.22.3-rootless
+      namespace: gitea
+      replicas: 1
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    role: workload
+    targetRepo: support-services
+    template: local/gitea
+  - component: config
+    dependsOn:
+    - gitea/install
+    instance: gitea-config
+    renderedPaths:
+      dir: packages/gitea/config
+      repo: support-services-dsv
+    renderer: raw
+    resolvedValues:
+      namespace: gitea
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    role: workload
+    targetRepo: support-services-dsv
+    template: local/gitea
+  - component: install
+    dependsOn:
+    - olm
+    instance: keycloak-install
+    renderedPaths:
+      dir: packages/keycloak/install
+      repo: support-services
+    renderer: raw
+    resolvedValues:
+      adminPassword: gitups-e2e-admin
+      adminUser: admin
+      image: quay.io/keycloak/keycloak:25.0.6
+      namespace: keycloak
+      replicas: 1
+    role: workload
+    targetRepo: support-services
+    template: local/keycloak
+  - component: config
+    dependsOn:
+    - keycloak/install
+    instance: keycloak-config
+    renderedPaths:
+      dir: packages/keycloak/config
+      repo: support-services-dsv
+    renderer: raw
+    resolvedValues:
+      namespace: keycloak
+    role: workload
+    targetRepo: support-services-dsv
+    template: local/keycloak
+  - component: install
+    dependsOn:
+    - olm
+    instance: service-mesh-install
+    renderedPaths:
+      dir: packages/service-mesh/install
+      repo: support-services
+    renderer: raw
+    resolvedValues:
+      image: docker.io/istio/pilot:1.23.2
+      namespace: istio-system
+      replicas: 1
+    role: workload
+    targetRepo: support-services
+    template: local/service-mesh
+  - component: config
+    dependsOn:
+    - service-mesh/install
+    instance: service-mesh-config
+    renderedPaths:
+      dir: packages/service-mesh/config
+      repo: support-services-dsv
+    renderer: raw
+    resolvedValues:
+      meshID: mesh-dsv
+      namespace: istio-system
+    role: workload
+    targetRepo: support-services-dsv
+    template: local/service-mesh
+  - component: operator
+    dependsOn:
+    - olm
+    instance: argocd-operator
+    renderedPaths:
+      dir: packages/argocd/operator
+      repo: gitops-controllers
+    renderer: olm
+    resolvedValues:
+      namespace: argocd
+    role: controller
+    targetRepo: gitops-controllers
+    template: local/argocd
+  - component: instance
+    dependsOn:
+    - argocd/operator
+    instance: argocd-instance
+    renderedPaths:
+      dir: packages/argocd/instance
+      repo: gitops-controllers-dsv
+    renderer: raw
+    resolvedValues:
+      instance: argocd
+      namespace: argocd
+    role: controller
+    targetRepo: gitops-controllers-dsv
+    template: local/argocd
+  - component: applications
+    dependsOn:
+    - argocd/instance
+    instance: argocd-applications
+    renderedPaths:
+      dir: packages/argocd/applications
+      repo: gitops-controllers-dsv
+    renderer: raw
+    resolvedValues:
+      namespace: argocd
+      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
+      targetRevision: HEAD
+    role: controller
+    targetRepo: gitops-controllers-dsv
+    template: local/argocd
+  - component: install
+    instance: declarest-install
+    renderedPaths:
+      dir: packages/declarest/install
+      repo: gitops-controllers
+    renderer: raw
+    resolvedValues:
+      image: ghcr.io/crmarques/declarest:0.0.1
+      namespace: declarest-system
+      replicas: 1
+    role: controller
+    targetRepo: gitops-controllers
+    template: local/declarest
+  - component: config
+    dependsOn:
+    - declarest/install
+    instance: declarest-config
+    renderedPaths:
+      dir: packages/declarest/config
+      repo: gitops-controllers-dsv
+    renderer: raw
+    resolvedValues:
+      namespace: declarest-system
+      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
+      targetRevision: HEAD
+    role: controller
+    targetRepo: gitops-controllers-dsv
+    template: local/declarest
+  placeholders: []
+  repository:
+    layout: split
+    outputPath: ./out/dsv
+  sourceProvisionRef:
+    name: dsv
+  sources:
+  - name: local
+    path: ../../../gitups-packages
+    type: filesystem

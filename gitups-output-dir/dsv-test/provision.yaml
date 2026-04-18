@@ -1,0 +1,21 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: dsv-test
+spec:
+  # Package sources: declare where gitups should look up package definitions.
+  # v0.1 supports "filesystem" sources only. Path is relative to this file.
+  sources: []
+  # - name: local
+  #   type: filesystem
+  #   path: ../../../gitups-packages
+
+  # Packages to install, referenced as <source>/<package>.
+  packages: []
+  # - template: local/olm
+  # - template: local/metallb
+  #   values:
+  #     addressPools:
+  #       - name: default
+  #         cidrs: [172.18.255.10-172.18.255.20]
+  # - template: local/nginx-ingress

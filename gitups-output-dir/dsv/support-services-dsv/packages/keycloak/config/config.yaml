@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-env-config
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: support-services
+data:
+  profile: "dsv"
+  service-url: "http://keycloak.keycloak.svc.cluster.local:8080"
+

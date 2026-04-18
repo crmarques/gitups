@@ -1,0 +1,45 @@
+# Local-only scratch space; never pushed to remote (see AGENTS.md §§2, 5.2)
+/agents/plans/
+/tmp/
+
+# Build and render outputs
+# Repo-local CLI build output. Keep the directory placeholder tracked.
+/bin/*
+!/bin/.gitkeep
+/dist/
+/out/
+/coverage/
+/gitups
+/gitups.exe
+/full-provision.yaml
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.out
+.coverprofile
+coverage.html
+profile.out
+
+# Compiled libraries and executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Editor and temporary files
+*.swp
+*.swo
+*.tmp
+*~
+
+# Claude
+/.claude/*
+
+# Codex
+/.codex/*
+
+# OS metadata
+.DS_Store
+Thumbs.db

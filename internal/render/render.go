@@ -1,0 +1,460 @@
+// Package render implements stage 2 of gitups: consume a FullProvision and
+// write a split-layout output tree (one directory per logical repo).
+//
+// The renderer never reads Provision directly; it operates on the resolved
+// FullProvision produced by package resolve.
+package render
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"sigs.k8s.io/yaml"
+
+	v1 "github.com/crmarques/gitups/api/v1alpha1"
+	"github.com/crmarques/gitups/internal/catalog"
+	"github.com/crmarques/gitups/internal/placeholders"
+)
+
+// Options controls Render behavior.
+type Options struct {
+	OutputPath        string
+	KubectlContext    string
+	AllowPlaceholders bool
+	Helm              HelmRunner
+	Kustomize         KustomizeRunner
+	Hooks             HookRunner
+	SourceFullProv    string // optional path to the input FullProvision for traceability copy
+	// SuppressFullProvision disables writing full-provision.yaml at the top of
+	// OutputPath. Set by the workspace-layout CLI where the authoritative
+	// FullProvision lives one level up and re-writing it here would clobber
+	// the user's formatting/comments.
+	SuppressFullProvision bool
+	// PreserveExtras, when true, keeps existing top-level entries in OutputPath
+	// that the renderer did not produce (e.g. sibling provision.yaml /
+	// full-provision.yaml managed by the CLI workspace). Only entries matching
+	// a rendered repo dir or trace file are replaced. Defaults to false, which
+	// preserves legacy nuke-and-rename behavior for callers that own the whole
+	// tree.
+	PreserveExtras bool
+	// Prune, used together with PreserveExtras, removes top-level directories
+	// in OutputPath that are not one of the repos emitted by this render pass.
+	// Workspace-managed files (provision.yaml / full-provision.yaml) are
+	// always preserved. No effect when PreserveExtras is false.
+	Prune bool
+}
+
+// Render writes the full output tree for fp under opts.OutputPath. It renders
+// into a temporary sibling directory first and swaps it into place atomically.
+func Render(ctx context.Context, fp *v1.FullProvision, cat *catalog.Catalog, opts Options) error {
+	if !opts.AllowPlaceholders {
+		if err := failOnPlaceholders(fp); err != nil {
+			return err
+		}
+	}
+	if opts.Helm == nil {
+		opts.Helm = NewExecHelmRunner("helm")
+	}
+	if opts.Kustomize == nil {
+		opts.Kustomize = NewExecKustomizeRunner("kustomize")
+	}
+	if opts.Hooks == nil {
+		opts.Hooks = NewExecHookRunner()
+	}
+	if opts.OutputPath == "" {
+		opts.OutputPath = fp.Spec.Repository.OutputPath
+	}
+	if opts.OutputPath == "" {
+		return fmt.Errorf("outputPath is empty; set --out or spec.repository.outputPath")
+	}
+
+	// Collect per-repo package sets so we can write top-level kustomization
+	// and READMEs after per-package rendering.
+	byRepo := map[string][]*v1.ResolvedPackage{}
+
+	tempDir, err := os.MkdirTemp(filepath.Dir(absOrCwd(opts.OutputPath)), ".gitups-render-")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	for i := range fp.Spec.Packages {
+		rp := &fp.Spec.Packages[i]
+		entry, ok := cat.Lookup(rp.Template)
+		if !ok {
+			return fmt.Errorf("package %s: template %q not in catalog", rp.Instance, rp.Template)
+		}
+		pkgDir := filepath.Join(tempDir, rp.RenderedPaths.Repo, rp.RenderedPaths.Dir)
+		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+			return fmt.Errorf("package %s: mkdir %s: %w", rp.Instance, pkgDir, err)
+		}
+		if err := renderPackage(ctx, rp, entry, pkgDir, fp, opts); err != nil {
+			return fmt.Errorf("package %s: %w", rp.Instance, err)
+		}
+		byRepo[rp.RenderedPaths.Repo] = append(byRepo[rp.RenderedPaths.Repo], rp)
+	}
+
+	if err := writeRepoToplevel(tempDir, byRepo, fp); err != nil {
+		return err
+	}
+
+	if !opts.SuppressFullProvision {
+		if opts.SourceFullProv != "" {
+			src, err := os.ReadFile(opts.SourceFullProv)
+			if err != nil {
+				return fmt.Errorf("copy full-provision: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(tempDir, "full-provision.yaml"), src, 0o644); err != nil {
+				return fmt.Errorf("write full-provision copy: %w", err)
+			}
+		} else {
+			out, err := yaml.Marshal(fp)
+			if err != nil {
+				return fmt.Errorf("marshal full-provision: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(tempDir, "full-provision.yaml"), out, 0o644); err != nil {
+				return fmt.Errorf("write full-provision: %w", err)
+			}
+		}
+	}
+
+	absOut, err := filepath.Abs(opts.OutputPath)
+	if err != nil {
+		return fmt.Errorf("resolve outputPath: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absOut), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(absOut), err)
+	}
+
+	if opts.PreserveExtras {
+		if err := swapEntries(tempDir, absOut); err != nil {
+			return err
+		}
+		if opts.Prune {
+			keep := map[string]bool{}
+			for repo := range byRepo {
+				keep[repo] = true
+			}
+			if err := pruneOrphanDirs(absOut, keep); err != nil {
+				return err
+			}
+		}
+	} else {
+		if _, err := os.Stat(absOut); err == nil {
+			if err := os.RemoveAll(absOut); err != nil {
+				return fmt.Errorf("remove existing outputPath: %w", err)
+			}
+		}
+		if err := os.Rename(tempDir, absOut); err != nil {
+			return fmt.Errorf("rename %s -> %s: %w", tempDir, absOut, err)
+		}
+	}
+	committed = true
+	return nil
+}
+
+// swapEntries moves every top-level entry from src into dst, replacing any
+// existing same-named entry in dst. Entries in dst that have no counterpart in
+// src are left alone. Not fully atomic across entries (rename is atomic within
+// a single entry); the trade-off is that siblings the caller maintains in dst
+// are preserved.
+func swapEntries(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst, err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("read temp %s: %w", src, err)
+	}
+	for _, e := range entries {
+		dstEntry := filepath.Join(dst, e.Name())
+		if _, err := os.Stat(dstEntry); err == nil {
+			if err := os.RemoveAll(dstEntry); err != nil {
+				return fmt.Errorf("remove %s: %w", dstEntry, err)
+			}
+		}
+		if err := os.Rename(filepath.Join(src, e.Name()), dstEntry); err != nil {
+			return fmt.Errorf("rename %s: %w", e.Name(), err)
+		}
+	}
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("remove temp %s: %w", src, err)
+	}
+	return nil
+}
+
+// pruneOrphanDirs removes top-level directories under dst whose names are not
+// in keep. Files (provision.yaml / full-provision.yaml) are always left alone.
+func pruneOrphanDirs(dst string, keep map[string]bool) error {
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		return fmt.Errorf("read %s for prune: %w", dst, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if keep[e.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dst, e.Name())); err != nil {
+			return fmt.Errorf("prune %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+func absOrCwd(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "."
+	}
+	return abs
+}
+
+func failOnPlaceholders(fp *v1.FullProvision) error {
+	var paths []string
+	for i := range fp.Spec.Packages {
+		rp := &fp.Spec.Packages[i]
+		if placeholders.Contains(rp.ResolvedValues) {
+			paths = append(paths, rp.Instance)
+		}
+	}
+	if len(paths) > 0 {
+		sort.Strings(paths)
+		return fmt.Errorf("unfilled placeholders in: %s (re-run with --allow-placeholders to force)", strings.Join(paths, ", "))
+	}
+	return nil
+}
+
+type renderUnit struct {
+	SourceDir string
+	Renderer  string
+	OLM       *v1.OLMSpec
+	Helm      *v1.HelmSpec
+	Kustomize *v1.KustomizeSpec
+	Hooks     *v1.HookSpec
+	Overlays  []string
+}
+
+func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, error) {
+	switch rp.UnitType {
+	case v1.UnitTypeInstall:
+		u, ok := entry.Installs[rp.InstallMethod]
+		if !ok {
+			return renderUnit{}, fmt.Errorf("install method %q not declared by package %q", rp.InstallMethod, entry.Def.Metadata.Name)
+		}
+		return renderUnit{
+			SourceDir: u.SourceDir,
+			Renderer:  u.Descriptor.Renderer,
+			OLM:       u.Descriptor.OLM,
+			Helm:      u.Descriptor.Helm,
+			Kustomize: u.Descriptor.Kustomize,
+			Hooks:     u.Descriptor.Hooks,
+			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+		}, nil
+	case v1.UnitTypeResource:
+		u, ok := entry.Resources[rp.ResourceTemplate]
+		if !ok {
+			return renderUnit{}, fmt.Errorf("resource template %q not declared by package %q", rp.ResourceTemplate, entry.Def.Metadata.Name)
+		}
+		return renderUnit{
+			SourceDir: u.SourceDir,
+			Renderer:  u.Descriptor.Renderer,
+			OLM:       u.Descriptor.OLM,
+			Helm:      u.Descriptor.Helm,
+			Kustomize: u.Descriptor.Kustomize,
+			Hooks:     u.Descriptor.Hooks,
+			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+		}, nil
+	default:
+		return renderUnit{}, fmt.Errorf("unknown unitType %q", rp.UnitType)
+	}
+}
+
+// renderPackage dispatches on renderer type, runs hooks, and writes overlays.
+func renderPackage(ctx context.Context, rp *v1.ResolvedPackage, entry catalog.Entry, pkgDir string, fp *v1.FullProvision, opts Options) error {
+	unit, err := renderUnitFor(rp, entry)
+	if err != nil {
+		return err
+	}
+	tctx := templateCtx{
+		Values:           rp.ResolvedValues,
+		Instance:         rp.Instance,
+		PackageInstance:  rp.PackageInstance,
+		UnitType:         rp.UnitType,
+		ResourceTemplate: rp.ResourceTemplate,
+		ResourceName:     rp.ResourceName,
+		Env:              fp.Metadata.Name,
+		Context:          opts.KubectlContext,
+	}
+
+	if err := runHook(ctx, unit, "pre-render", pkgDir, rp.ResolvedValues, opts.Hooks); err != nil {
+		return err
+	}
+
+	switch unit.Renderer {
+	case "olm":
+		if err := renderOLM(ctx, rp, unit, pkgDir, tctx); err != nil {
+			return err
+		}
+	case "helm":
+		if err := renderHelm(ctx, rp, unit, pkgDir, tctx, opts.Helm); err != nil {
+			return err
+		}
+	case "kustomize":
+		if err := renderKustomize(ctx, rp, unit, pkgDir, tctx, opts.Kustomize); err != nil {
+			return err
+		}
+	case "raw":
+		if err := renderRaw(ctx, rp, unit, pkgDir, tctx); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown renderer %q", unit.Renderer)
+	}
+
+	if err := renderOverlays(unit, pkgDir, tctx); err != nil {
+		return err
+	}
+
+	if err := writePackageKustomization(pkgDir); err != nil {
+		return err
+	}
+
+	return runHook(ctx, unit, "post-render", pkgDir, rp.ResolvedValues, opts.Hooks)
+}
+
+func writeRepoToplevel(tempDir string, byRepo map[string][]*v1.ResolvedPackage, fp *v1.FullProvision) error {
+	repos := make([]string, 0, len(byRepo))
+	for r := range byRepo {
+		repos = append(repos, r)
+	}
+	sort.Strings(repos)
+	for _, repo := range repos {
+		pkgs := byRepo[repo]
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Instance < pkgs[j].Instance })
+		repoDir := filepath.Join(tempDir, repo)
+
+		resourceSet := map[string]bool{}
+		parentResources := map[string]map[string]bool{}
+		for _, rp := range pkgs {
+			dir := filepath.ToSlash(rp.RenderedPaths.Dir)
+			parts := strings.Split(dir, "/")
+			if len(parts) >= 3 && parts[0] == "packages" {
+				parent := filepath.Join(parts[0], parts[1])
+				resourceSet[parent] = true
+				for i := 2; i < len(parts); i++ {
+					p := filepath.Join(parts[:i]...)
+					if parentResources[p] == nil {
+						parentResources[p] = map[string]bool{}
+					}
+					parentResources[p][parts[i]] = true
+				}
+				continue
+			}
+			resourceSet[rp.RenderedPaths.Dir] = true
+		}
+		for parent, children := range parentResources {
+			parentDir := filepath.Join(repoDir, parent)
+			if err := os.MkdirAll(parentDir, 0o755); err != nil {
+				return fmt.Errorf("repo %s: mkdir %s: %w", repo, parent, err)
+			}
+			if err := writeKustomization(filepath.Join(parentDir, "kustomization.yaml"), sortedKeys(children)); err != nil {
+				return fmt.Errorf("repo %s: write %s/kustomization.yaml: %w", repo, parent, err)
+			}
+		}
+		if err := writeKustomization(filepath.Join(repoDir, "kustomization.yaml"), sortedKeys(resourceSet)); err != nil {
+			return fmt.Errorf("repo %s: write kustomization: %w", repo, err)
+		}
+
+		// README
+		var b strings.Builder
+		fmt.Fprintf(&b, "# %s\n\nRepo rendered by gitups from FullProvision %q.\n\n",
+			repo, fp.Metadata.Name)
+		fmt.Fprintf(&b, "## Packages\n\n")
+		for _, rp := range pkgs {
+			fmt.Fprintf(&b, "- **%s** (%s, %s, renderer=%s, role=%s) -> `%s`\n",
+				rp.Instance, rp.Template, rp.UnitType, rp.Renderer, rp.Role, rp.RenderedPaths.Dir)
+		}
+		if len(fp.Spec.Placeholders) > 0 {
+			fmt.Fprintf(&b, "\n## Unfilled placeholders at render time\n\n")
+			for _, ph := range fp.Spec.Placeholders {
+				fmt.Fprintf(&b, "- `%s` — %s\n", ph.Path, ph.Reason)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte(b.String()), 0o644); err != nil {
+			return fmt.Errorf("repo %s: write README: %w", repo, err)
+		}
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func writeKustomization(path string, resources []string) error {
+	kz := map[string]any{
+		"apiVersion": "kustomize.config.k8s.io/v1beta1",
+		"kind":       "Kustomization",
+		"resources":  resources,
+	}
+	body, err := yaml.Marshal(kz)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0o644)
+}
+
+// writePackageKustomization writes a kustomization.yaml listing every .yaml
+// file in pkgDir except values.yaml (which is human-readable helm inputs, not
+// a k8s manifest) and kustomization.yaml itself.
+func writePackageKustomization(pkgDir string) error {
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return err
+	}
+	var resources []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		if name == "kustomization.yaml" || name == "values.yaml" {
+			continue
+		}
+		resources = append(resources, name)
+	}
+	sort.Strings(resources)
+	kz := map[string]any{
+		"apiVersion": "kustomize.config.k8s.io/v1beta1",
+		"kind":       "Kustomization",
+		"resources":  resources,
+	}
+	body, err := yaml.Marshal(kz)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pkgDir, "kustomization.yaml"), body, 0o644)
+}

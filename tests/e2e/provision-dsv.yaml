@@ -1,0 +1,56 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: dsv
+spec:
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages
+
+  repositories:
+    - name: basic-infra
+      description: "Cluster-wide infra installed up-front."
+      type: k8s-gitops-generic
+      packages:
+        - template: local/olm
+        - template: local/nginx-ingress
+        - template: local/metallb
+          installMethod: helm
+
+    - name: basic-infra-{{.Env}}
+      description: "Env-specific infra config."
+      type: k8s-gitops-env
+      repoRef:
+        name: basic-infra
+        commit: v0.0.1
+
+    - name: support-services
+      description: "Shared support service installs."
+      type: k8s-gitops-generic
+      packages:
+        - template: local/vault
+        - template: local/gitea
+        - template: local/keycloak
+        - template: local/service-mesh
+
+    - name: support-services-{{.Env}}
+      description: "Env-specific support service configuration."
+      type: k8s-gitops-env
+      repoRef:
+        name: support-services
+        commit: v0.0.1
+
+    - name: gitops-controllers
+      description: "Cluster-wide GitOps controller configuration."
+      type: k8s-gitops-generic
+      packages:
+        - template: local/argocd
+        - template: local/declarest
+
+    - name: gitops-controllers-{{.Env}}
+      description: "Env-specific GitOps controller configuration."
+      type: k8s-gitops-env
+      repoRef:
+        name: gitops-controllers
+        commit: v0.0.1
