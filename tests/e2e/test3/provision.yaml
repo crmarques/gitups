@@ -1,0 +1,73 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: test3
+spec:
+  envKey: dev
+  controllers:
+    kubernetesResources:
+      repo: gitops-controllers
+      instance: argocd
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages/packages
+
+  repositories:
+    - name: basic-infra
+      description: "Cluster-wide infra: OLM + metallb (OLM) + nginx-ingress (helm)."
+      type: kubernetes-resources
+      packages:
+        - template: local/olm
+        - template: local/metallb
+          installMethod: olm
+        - template: local/nginx-ingress
+          installMethod: helm
+          values:
+            controller:
+              service:
+                type: LoadBalancer
+
+    - name: basic-infra-{{.Env}}
+      description: "Env overlay: configure metallb pool + wire nginx-ingress to it."
+      type: kubernetes-resources
+      repoRef:
+        name: basic-infra
+      packages:
+        - template: local/nginx-ingress
+          bindings:
+            - name: nginx-ingress-lb
+              capability: lb-ip-pool
+              provider:
+                repo: basic-infra
+                instance: metallb
+              values:
+                poolName: ingress-pool
+                cidrs:
+                  - 172.18.255.200-172.18.255.250
+
+    - name: support-services
+      description: "Shared support services: keycloak operator (OLM)."
+      type: kubernetes-resources
+      packages:
+        - template: local/keycloak
+          installMethod: olm
+
+    - name: support-services-{{.Env}}
+      description: "Env overlay for support services."
+      type: kubernetes-resources
+      repoRef:
+        name: support-services
+
+    - name: gitops-controllers
+      description: "GitOps controllers: argocd (OLM)."
+      type: kubernetes-resources
+      packages:
+        - template: local/argocd
+          installMethod: olm
+
+    - name: gitops-controllers-{{.Env}}
+      description: "Env overlay for argocd."
+      type: kubernetes-resources
+      repoRef:
+        name: gitops-controllers

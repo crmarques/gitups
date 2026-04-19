@@ -1,0 +1,137 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: test4
+spec:
+  envKey: dev
+  controllers:
+    kubernetesResources:
+      repo: gitops-controllers
+      instance: argocd
+    serviceResources:
+      repo: gitops-controllers
+      instance: declarest
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages/packages
+
+  repositories:
+    - name: basic-infra
+      description: "OLM + metallb (OLM) + nginx-ingress (helm)."
+      type: kubernetes-resources
+      packages:
+        - template: local/olm
+        - template: local/metallb
+          installMethod: olm
+        - template: local/nginx-ingress
+          installMethod: helm
+          values:
+            controller:
+              service:
+                type: LoadBalancer
+
+    - name: basic-infra-{{.Env}}
+      description: "Wire metallb pool to nginx-ingress."
+      type: kubernetes-resources
+      repoRef:
+        name: basic-infra
+      packages:
+        - template: local/nginx-ingress
+          bindings:
+            - name: nginx-ingress-lb
+              capability: lb-ip-pool
+              provider:
+                repo: basic-infra
+                instance: metallb
+              values:
+                poolName: ingress-pool
+                cidrs:
+                  - 172.18.255.200-172.18.255.250
+
+    - name: support-services
+      description: "keycloak (OLM operator) + vault (helm, dev mode)."
+      type: kubernetes-resources
+      packages:
+        - template: local/keycloak
+          installMethod: olm
+        - template: local/vault
+          installMethod: helm
+
+    - name: support-services-{{.Env}}
+      description: "Env-scoped support-services: expose vault as a declarest SecretStore."
+      type: kubernetes-resources
+      repoRef:
+        name: support-services
+      packages:
+        - template: local/vault
+          resources:
+            - template: secret-store
+              name: vault
+              values:
+                vault:
+                  service: vault
+                  namespace: vault
+                  port: 8200
+                  scheme: http
+                tokenSecretRef:
+                  name: vault-root-token
+                  key: token
+
+    - name: gitops-controllers
+      description: "argocd (OLM) + declarest (OLM)."
+      type: kubernetes-resources
+      packages:
+        - template: local/argocd
+          installMethod: olm
+        - template: local/declarest
+          installMethod: olm
+
+    - name: gitops-controllers-{{.Env}}
+      description: "Declarest SyncPolicy wiring keycloak admin API to the env repo, backed by vault."
+      type: kubernetes-resources
+      repoRef:
+        name: gitops-controllers
+      packages:
+        - template: local/declarest
+          resources:
+            - template: resource-repository
+              name: env-repo
+              values:
+                pollInterval: 1m
+                git:
+                  branch: main
+                  auth:
+                    tokenRef:
+                      name: repository-credentials
+                      key: token
+            - template: managed-service
+              name: keycloak
+              values:
+                http:
+                  baseURL: http://keycloak-service.keycloak.svc:8080
+                  auth:
+                    header: Authorization
+                    prefix: Bearer
+                    valueRef:
+                      name: keycloak-admin-token
+                      key: token
+                metadata:
+                  bundle: keycloak-bundle:1.0.0
+            - template: sync-policy
+              name: keycloak-master-realm
+              values:
+                resourceRepositoryRef:
+                  name: env-repo
+                managedServiceRef:
+                  name: keycloak
+                secretStoreRef:
+                  name: vault
+                source:
+                  path: /realms/master
+                  recursive: true
+                sync:
+                  force: false
+                  prune: false
+                syncInterval: 5m
+                suspend: false

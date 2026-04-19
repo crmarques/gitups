@@ -13,14 +13,14 @@ import (
 func loadFixtures(t *testing.T) (*v1.Provision, *catalog.Catalog) {
 	t.Helper()
 	repoRoot, _ := filepath.Abs("../..")
-	prov, err := load.Provision(filepath.Join(repoRoot, "tests/e2e/dsv/provision.yaml"))
+	prov, err := load.Provision(filepath.Join(repoRoot, "internal/testdata/dsv/provision.yaml"))
 	if err != nil {
 		t.Fatalf("load provision: %v", err)
 	}
-	// baseDir stays at tests/e2e so the Provision's relative source path
-	// (../../../gitups-packages/packages) resolves to the sibling catalog. The
-	// provision fixture itself moved one level deeper; its bytes are
-	// identical to what the e2e run.sh copies into its per-run workspace.
+	// baseDir points at tests/e2e so the fixture's relative source path
+	// (../../../gitups-packages/packages) still resolves to the sibling
+	// catalog. The fixture file itself lives under internal/testdata/dsv
+	// so it is not advertised as a user-facing e2e case.
 	baseDir := filepath.Join(repoRoot, "tests/e2e")
 	cat, err := catalog.Build(prov.Spec.Sources, baseDir)
 	if err != nil {
@@ -93,7 +93,6 @@ func TestExpandPlaceholders(t *testing.T) {
 		"spec.packages[argocd-managed-repo-support-services].resolvedValues.repoURL":       false,
 		"spec.packages[argocd-managed-repo-support-services-dsv].resolvedValues.repoURL":   false,
 		"spec.packages[argocd-managed-repo-gitops-controllers-dsv].resolvedValues.repoURL": false,
-		"spec.packages[declarest-config-default].resolvedValues.repoURL":                   false,
 		"spec.packages[metallb-config-default].resolvedValues.addressPools[0].cidrs[0]":    false,
 		"spec.packages[vault].resolvedValues.server.dev.devRootToken":                      false,
 	}
@@ -121,8 +120,6 @@ func TestExpandIdempotentPreservesUserEdits(t *testing.T) {
 		switch {
 		case rp.Domain == v1.DomainKRC && rp.ResourceTemplate == "managed-repo":
 			rp.ResolvedValues["repoURL"] = "https://git.example.com/" + rp.ResourceName + ".git"
-		case rp.Instance == "declarest-config-default":
-			rp.ResolvedValues["repoURL"] = "https://git.example.com/gitops.git"
 		case rp.Instance == "metallb-config-default":
 			pools := rp.ResolvedValues["addressPools"].([]any)
 			pool := pools[0].(map[string]any)

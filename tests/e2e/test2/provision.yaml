@@ -1,0 +1,68 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: test2
+spec:
+  envKey: dev
+  controllers:
+    kubernetesResources:
+      repo: gitops-controllers
+      instance: argocd
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages/packages
+
+  repositories:
+    - name: basic-infra
+      description: "Cluster-wide infra: nginx-ingress only."
+      type: kubernetes-resources
+      packages:
+        - template: local/nginx-ingress
+          installMethod: helm
+          values:
+            controller:
+              service:
+                type: ClusterIP
+
+    - name: basic-infra-{{.Env}}
+      description: "Env-scoped basic-infra overlay."
+      type: kubernetes-resources
+      repoRef:
+        name: basic-infra
+
+    - name: support-services
+      description: "Shared support services: keycloak (helm)."
+      type: kubernetes-resources
+      packages:
+        - template: local/keycloak
+          installMethod: helm
+          values:
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              hostname: keycloak.test2.local
+            auth:
+              adminUser: admin
+              adminPassword: admin-dev-password
+            production: false
+            proxy: edge
+
+    - name: support-services-{{.Env}}
+      description: "Env-scoped support-services overlay."
+      type: kubernetes-resources
+      repoRef:
+        name: support-services
+
+    - name: gitops-controllers
+      description: "GitOps controllers: argocd only."
+      type: kubernetes-resources
+      packages:
+        - template: local/argocd
+          installMethod: helm
+
+    - name: gitops-controllers-{{.Env}}
+      description: "Env-scoped argocd overlay."
+      type: kubernetes-resources
+      repoRef:
+        name: gitops-controllers

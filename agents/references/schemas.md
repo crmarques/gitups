@@ -165,89 +165,28 @@ Packages declare structural capability contracts; the user wires them in
 (in the consumer's env repo) and one provider-side resource per env repo
 that references the provider's generic repo.
 
-Capability names (`git-provider`, `lb-ip-pool`, `http-upstream`, …) are
+Capability names (`git-provider`, `lb-ip-pool`, `secret-store`, …) are
 an **open extension point**: new packages can coin new names by
 convention; gitups core only enforces shape (non-empty name, unique
 binding name, consistent provider/consumer wiring). No registry to
 update.
 
-Service-config interfaces declared via `spec.implements[]` (provider
-side) and `spec.bundles[]` (SRC side) work the same way — interface
-names like `http-proxy/v1alpha1` are strings agreed on out-of-band
-between package authors and SRC authors. Gitups cross-references them
-at expand time so every projected CR's interface has a matching bundle
-on the selected SRC.
+## Declarest-reconciled services
 
-## Service-config interface projection
+Service-level reconciliation through declarest is described in
+[declarest.md](declarest.md). Summary for schema purposes:
 
-A `service-resources` repo carries a `serviceRef: {repo, instance}`
-identifying the workload whose interface it configures, plus an
-`interfaceResources[]` list. Each entry becomes one CR rendered from
-the provider's `resources/<resourceTemplate>/` directory and routed at
-apply time through `spec.controllers.serviceResources`.
-
-```yaml
-- name: services-haproxy-{{.Env}}
-  type: service-resources
-  serviceRef:
-    repo: support-services
-    instance: haproxy          # must be a selected workload in that repo
-  interfaceResources:
-    - name: gitea              # becomes resourceName in the rendered unit
-      interface: http-proxy
-      version: v1alpha1
-      resourceTemplate: backend  # optional; defaults from provider's implements[]
-      consumer:                  # advisory: records intent on the projected unit
-        repo: support-services
-        instance: gitea
-      values:
-        serviceName: gitea-http
-        serviceNamespace: gitea
-        servicePort: 3000
-        host: gitea.dsv.local
-```
-
-Provider-side declaration:
-
-```yaml
-# haproxy/package.yaml
-spec:
-  implements:
-    - interface: http-proxy
-      version: v1alpha1
-      resourceTemplate: backend   # resources/backend/ renders the CR body
-```
-
-SRC-side declaration (Declarest):
-
-```yaml
-# declarest/package.yaml
-spec:
-  bundles:
-    - interface: http-proxy
-      version: v1alpha1
-      source: "ghcr.io/org/declarest-bundles:http-proxy-v0.1.0"
-```
-
-The SRC must also carry a `service-resource-controller/managed-resource/`
-directory so apply-time routing resolves the intent. Gitups's projector
-tags each synthesised unit with
-`controller.{kind: service-resource-controller, intent: managed-resource}`,
-then `apply` invokes the SRC's CLI against the rendered unit dir.
-
-Projection rules:
-
-- The provider package in `serviceRef.{repo, instance}` must `implements`
-  the declared `{interface, version}`.
-- The selected SRC
-  (`Provision.spec.controllers.serviceResources.{repo, instance}`) must
-  `bundles` the same `{interface, version}`.
-- If the decl leaves `resourceTemplate` empty, the projector uses the
-  `resourceTemplate` on the provider's `implements[]` entry, falling
-  back to `<interface>-<version>` as a last resort.
-- Fan-out is per `interfaceResources[]` entry in the repo; projected
-  instance names are `<repoName>-<entry.name>` so two repos (e.g. dev +
-  prod) can both carry a `gitea` backend without colliding.
+- A package that ships a declarest metadata bundle declares
+  `spec.declarestBundle: {name, version, ref?}` in `package.yaml`.
+  The field is advisory metadata — gitups never fetches the bundle.
+- Declarest itself is a package with `role: service-resource-controller`
+  and four resource templates (`resource-repository`, `managed-service`,
+  `secret-store`, `sync-policy`) that render the four declarest CRDs.
+- Provisions compose those templates explicitly under a consumer
+  `packages[].resources[]` list; gitups core performs no service-specific
+  projection. The retired `spec.implements[]` / `spec.bundles[]` /
+  `Provision.spec.repositories[].interfaceResources[]` machinery
+  (and the `service-resources` repo type) no longer exist.
 
 ## Compatibility
 

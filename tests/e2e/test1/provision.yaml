@@ -1,16 +1,13 @@
 apiVersion: gitups/v1alpha1
 kind: Provision
 metadata:
-  name: basic-binding
+  name: test1
 spec:
   envKey: dev
   controllers:
     kubernetesResources:
       repo: gitops-controllers
       instance: argocd
-    serviceResources:
-      repo: gitops-controllers
-      instance: declarest
   sources:
     - name: local
       type: filesystem
@@ -18,46 +15,31 @@ spec:
 
   repositories:
     - name: basic-infra
+      description: "Cluster-wide infra: nginx-ingress only (no LB / metallb in test1)."
       type: kubernetes-resources
       packages:
-        - template: local/olm
         - template: local/nginx-ingress
-        - template: local/metallb
           installMethod: helm
+          values:
+            controller:
+              service:
+                type: ClusterIP
 
     - name: basic-infra-{{.Env}}
+      description: "Env-scoped basic-infra overlay."
       type: kubernetes-resources
       repoRef:
         name: basic-infra
 
-    - name: support-services
-      type: kubernetes-resources
-      packages:
-        - template: local/gitea
-
-    - name: support-services-{{.Env}}
-      type: kubernetes-resources
-      repoRef:
-        name: support-services
-
     - name: gitops-controllers
+      description: "GitOps controllers: argocd only."
       type: kubernetes-resources
       packages:
         - template: local/argocd
           installMethod: helm
-        - template: local/declarest
 
     - name: gitops-controllers-{{.Env}}
+      description: "Env-scoped argocd overlay."
       type: kubernetes-resources
       repoRef:
         name: gitops-controllers
-      packages:
-        - template: local/argocd
-          bindings:
-            - name: argocd-gitea-bot
-              capability: git-provider
-              provider:
-                repo: support-services
-                instance: gitea
-              values:
-                username: argocd-bot

@@ -335,24 +335,6 @@ spec:
     role: kubernetes-resource-controller
     template: local/argocd
     unitType: resource
-  - dependsOn:
-    - declarest/install
-    instance: declarest-config-default
-    packageInstance: declarest
-    renderedPaths:
-      dir: packages/declarest/resources/config/default
-      repo: gitops-controllers-dsv
-    renderer: raw
-    repository: gitops-controllers-dsv
-    resolvedValues:
-      namespace: declarest-system
-      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
-      targetRevision: HEAD
-    resourceName: default
-    resourceTemplate: config
-    role: service-resource-controller
-    template: local/declarest
-    unitType: resource
   placeholders: []
   repositories:
   - description: Cluster-wide infra installed up-front.

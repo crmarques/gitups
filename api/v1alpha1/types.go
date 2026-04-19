@@ -59,26 +59,12 @@ const (
 )
 
 // Repository type values accepted by Provision.spec.repositories[].type.
-// Generic vs env for KubernetesResources is inferred from repoRef presence:
-// env repos carry repoRef, generic repos do not.
+// Generic vs env is inferred from repoRef presence: env repos carry
+// repoRef, generic repos do not.
 const (
 	// RepoTypeKubernetesResources: any repo whose contents are K8s
-	// manifests (supersedes the previous generic/env split).
+	// manifests. The only supported repo type.
 	RepoTypeKubernetesResources = "kubernetes-resources"
-	// RepoTypeServiceResources: SRC-managed config repo. One per
-	// configurable service. Carries interface-shaped manifests.
-	RepoTypeServiceResources = "service-resources"
-)
-
-// Service-config interface constants. Gitups owns the closed set so
-// packages can declare compatible configurability surfaces without
-// stringly-typed mistakes.
-const (
-	InterfaceHTTPProxy         = "http-proxy"
-	InterfaceHTTPProxyV1Alpha1 = "v1alpha1"
-
-	// Kind constants for the http-proxy interface.
-	KindUpstream = "Upstream"
 )
 
 // Renderer identifiers. Every install method and resource descriptor must pick
@@ -201,49 +187,7 @@ type RepositoryDecl struct {
 	Description string         `json:"description,omitempty"`
 	Type        string         `json:"type"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
-	// ServiceRef is set only on service-resources repos and points at
-	// the workload package the repo is configuring (service-config
-	// interface resources for that package will land here).
-	ServiceRef *ServiceRef  `json:"serviceRef,omitempty"`
-	Packages   []PackageRef `json:"packages,omitempty"`
-	// InterfaceResources declares user-authored service-config CRs that
-	// land in this repo. Valid only on service-resources repos. Each
-	// entry names an interface the serviceRef provider `implements[]`
-	// and picks one of the provider's `resources/<resourceTemplate>/`
-	// templates as the CR shape.
-	InterfaceResources []InterfaceResourceDecl `json:"interfaceResources,omitempty"`
-}
-
-// InterfaceResourceDecl is one service-config CR to synthesise in a
-// service-resources repo. Resolver looks up the provider package
-// (ServiceRef), confirms it implements the named interface/version, and
-// renders the named resource template with the supplied values.
-type InterfaceResourceDecl struct {
-	// Name uniquely identifies this resource within its repo; used as
-	// the resourceName in the rendered unit path.
-	Name string `json:"name"`
-	// Interface and Version must match one of the provider's
-	// spec.implements[] entries.
-	Interface string `json:"interface"`
-	Version   string `json:"version"`
-	// ResourceTemplate optionally overrides the resourceTemplate named
-	// by the matching `implements[]` entry. Empty = use the default.
-	ResourceTemplate string `json:"resourceTemplate,omitempty"`
-	// Consumer is advisory metadata: the package instance this CR is
-	// being created for. Not required at resolve time but recorded on
-	// the projected unit's BindingOrigin for auditability.
-	Consumer *ProviderRef `json:"consumer,omitempty"`
-	// Values are merged over the resource descriptor's defaults to
-	// produce the CR body.
-	Values map[string]any `json:"values,omitempty"`
-}
-
-// ServiceRef identifies the workload instance a service-resources repo
-// owns configuration for. Shape matches ControllerAssignment /
-// ProviderRef — one reference spelling across the schema.
-type ServiceRef struct {
-	Repo     string `json:"repo"`
-	Instance string `json:"instance"`
+	Packages    []PackageRef   `json:"packages,omitempty"`
 }
 
 type RepositoryRef struct {
@@ -292,11 +236,6 @@ type ResolvedRepository struct {
 	Description string         `json:"description,omitempty"`
 	Type        string         `json:"type,omitempty"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
-	ServiceRef  *ServiceRef    `json:"serviceRef,omitempty"`
-	// InterfaceResources carried over from the Provision so render can
-	// present the user's intent in full-provision.yaml without consulting
-	// the original Provision.
-	InterfaceResources []InterfaceResourceDecl `json:"interfaceResources,omitempty"`
 }
 
 type ResolvedPackage struct {
@@ -435,18 +374,11 @@ type PackageDefinitionSpec struct {
 	// Optional on workloads — when present, downstream consumers can
 	// reference the provider's readiness state.
 	Readiness []ReadinessCheck `json:"readiness,omitempty"`
-	// Implements lists the service-config interfaces this package
-	// exposes. Used by the resolver to route binding-synthesised
-	// consumer resources into a matching service-resources repo with
-	// the right CR shape. Only interfaces in the gitups-owned set are
-	// accepted at load time.
-	Implements []InterfaceRef `json:"implements,omitempty"`
-	// Bundles (SRC-only) lists the service-config interfaces this
-	// controller can reconcile at runtime via an external bundle.
-	// Advisory metadata: gitups does not fetch the bundle; the
-	// in-cluster SRC operator pulls it at startup. Used at load time
-	// to validate every interface in use has a matching SRC bundle.
-	Bundles []BundleRef `json:"bundles,omitempty"`
+	// DeclarestBundle, when set, advertises that this package ships a
+	// declarest metadata bundle. Advisory only — gitups never fetches
+	// the bundle. Consumers composing declarest's ManagedService CR
+	// read the bundle name+version to fill spec.metadata.bundle.
+	DeclarestBundle *DeclarestBundle `json:"declarestBundle,omitempty"`
 	// Compatibility expresses declared target-cluster constraints.
 	// Fields are shape-only at load time; `gitups apply` probes the
 	// target cluster and warns when a planned unit is outside its
@@ -464,24 +396,21 @@ type Compatibility struct {
 	Kubernetes []string `json:"kubernetes,omitempty"`
 }
 
-// InterfaceRef pins one gitups-owned service-config interface + version.
-// ResourceTemplate, when set on a package's implements[] entry, names
-// which of the provider's resources/<name>/ templates produces the CR
-// body for this interface. Projector uses it when the
-// InterfaceResourceDecl leaves resourceTemplate empty.
-type InterfaceRef struct {
-	Interface        string `json:"interface"`
-	Version          string `json:"version"`
-	ResourceTemplate string `json:"resourceTemplate,omitempty"`
-}
-
-// BundleRef pins one interface-implementing bundle an SRC can reconcile.
-type BundleRef struct {
-	Interface string `json:"interface"`
-	Version   string `json:"version"`
-	// Source is the bundle image/artifact reference (e.g.
-	// "ghcr.io/org/bundle-name:v0.1.0"). Advisory today.
-	Source string `json:"source"`
+// DeclarestBundle advertises the declarest metadata bundle a package
+// ships. Shape-only: gitups core does not fetch the bundle; declarest
+// resolves it at runtime from ManagedService.spec.metadata.bundle.
+type DeclarestBundle struct {
+	// Name is the bundle identifier (e.g. "keycloak-bundle"). Used as
+	// the left side of the <name>:<version> shorthand that goes into
+	// ManagedService.spec.metadata.bundle.
+	Name string `json:"name"`
+	// Version is the bundle semver (without leading "v"). Used as the
+	// right side of <name>:<version>.
+	Version string `json:"version"`
+	// Ref, when set, is the OCI artifact reference (e.g.
+	// "ghcr.io/org/declarest-bundles/keycloak-bundle:1.0.0"). Advisory;
+	// declarest resolves by <name>:<version> shorthand at runtime.
+	Ref string `json:"ref,omitempty"`
 }
 
 // ControllerCLI describes how gitups invokes a controller's CLI during the

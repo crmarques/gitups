@@ -97,12 +97,6 @@ func Expand(p *v1.Provision, cat *catalog.Catalog, opts Options) (*v1.FullProvis
 	}
 	placeholderList = append(placeholderList, bindingPhs...)
 
-	interfacePhs, err := resolveInterfaceResources(p, cat, envKey, fp, priorByInstance, opts.Force)
-	if err != nil {
-		return nil, err
-	}
-	placeholderList = append(placeholderList, interfacePhs...)
-
 	controllerPhs, err := resolveControllers(p, cat, envKey, fp, priorByInstance, opts.Force)
 	if err != nil {
 		return nil, err
@@ -158,92 +152,52 @@ func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, [
 	for ri, repo := range p.Spec.Repositories {
 		repoName := substituteEnv(repo.Name, envKey)
 		resolvedRepos = append(resolvedRepos, v1.ResolvedRepository{
-			Name:               repoName,
-			Description:        repo.Description,
-			Type:               repo.Type,
-			RepoRef:            cloneRepoRef(repo.RepoRef),
-			ServiceRef:         cloneServiceRef(repo.ServiceRef),
-			InterfaceResources: cloneInterfaceResources(repo.InterfaceResources),
+			Name:        repoName,
+			Description: repo.Description,
+			Type:        repo.Type,
+			RepoRef:     cloneRepoRef(repo.RepoRef),
 		})
-		switch repo.Type {
-		case v1.RepoTypeKubernetesResources:
-			if repo.RepoRef == nil {
-				// Generic: collects install refs from packages[].
-				for pi, pr := range repo.Packages {
-					r, err := installRef(repoName, pr, cat)
-					if err != nil {
-						return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: %w", ri, pi, err)
-					}
-					if seenInstance[r.instance] {
-						return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
-					}
-					seenInstance[r.instance] = true
-					out = append(out, r)
-				}
-				continue
-			}
-			// Env: collects resource refs. Inherits packages[] from
-			// the referenced generic repo when the env repo leaves
-			// packages[] empty.
-			packages := repo.Packages
-			if len(packages) == 0 {
-				base, ok := genericByName[repo.RepoRef.Name]
-				if !ok {
-					return nil, nil, fmt.Errorf("spec.repositories[%d]: repoRef.name %q does not match a generic repository", ri, repo.RepoRef.Name)
-				}
-				packages = base.Packages
-			}
-			for pi, pr := range packages {
-				rs, err := resourceRefs(repoName, pr, cat)
+		if repo.RepoRef == nil {
+			// Generic: collects install refs from packages[].
+			for pi, pr := range repo.Packages {
+				r, err := installRef(repoName, pr, cat)
 				if err != nil {
 					return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: %w", ri, pi, err)
 				}
-				for _, r := range rs {
-					if seenInstance[r.instance] {
-						return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
-					}
-					seenInstance[r.instance] = true
-					out = append(out, r)
+				if seenInstance[r.instance] {
+					return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
 				}
+				seenInstance[r.instance] = true
+				out = append(out, r)
 			}
-		case v1.RepoTypeServiceResources:
-			// Service-resources repos are pure synthesis targets for
-			// Phase 5C's binding projection; they produce no units on
-			// their own. ResolvedRepository metadata is carried so
-			// render knows the repo exists.
 			continue
+		}
+		// Env: collects resource refs. Inherits packages[] from the
+		// referenced generic repo when the env repo leaves packages[]
+		// empty.
+		packages := repo.Packages
+		if len(packages) == 0 {
+			base, ok := genericByName[repo.RepoRef.Name]
+			if !ok {
+				return nil, nil, fmt.Errorf("spec.repositories[%d]: repoRef.name %q does not match a generic repository", ri, repo.RepoRef.Name)
+			}
+			packages = base.Packages
+		}
+		for pi, pr := range packages {
+			rs, err := resourceRefs(repoName, pr, cat)
+			if err != nil {
+				return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: %w", ri, pi, err)
+			}
+			for _, r := range rs {
+				if seenInstance[r.instance] {
+					return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
+				}
+				seenInstance[r.instance] = true
+				out = append(out, r)
+			}
 		}
 	}
 	return out, resolvedRepos, nil
-}
-
-func cloneServiceRef(in *v1.ServiceRef) *v1.ServiceRef {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneInterfaceResources(in []v1.InterfaceResourceDecl) []v1.InterfaceResourceDecl {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]v1.InterfaceResourceDecl, len(in))
-	for i, ir := range in {
-		out[i] = v1.InterfaceResourceDecl{
-			Name:             ir.Name,
-			Interface:        ir.Interface,
-			Version:          ir.Version,
-			ResourceTemplate: ir.ResourceTemplate,
-			Values:           cloneMap(ir.Values),
-		}
-		if ir.Consumer != nil {
-			c := *ir.Consumer
-			out[i].Consumer = &c
-		}
-	}
-	return out
 }
 
 func installRef(repoName string, pr v1.PackageRef, cat *catalog.Catalog) (ref, error) {

@@ -36,7 +36,7 @@ func (stubHelmRunner) Template(ctx context.Context, req render.HelmTemplateReque
 }
 
 // TestRenderRuns drives Render end-to-end against the pinned
-// tests/e2e/dsv/full-provision-filled.yaml fixture and the sibling
+// internal/testdata/dsv/full-provision-filled.yaml fixture and the sibling
 // gitups-packages catalog. It asserts only that render completes; output
 // shape is covered by per-renderer unit tests so the fixture doesn't have
 // to track every chart stub byte-for-byte.
@@ -45,7 +45,7 @@ func TestRenderRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fullProvPath := filepath.Join(repoRoot, "tests/e2e/dsv/full-provision-filled.yaml")
+	fullProvPath := filepath.Join(repoRoot, "internal/testdata/dsv/full-provision-filled.yaml")
 	fp, err := load.FullProvision(fullProvPath)
 	if err != nil {
 		t.Fatalf("load full-provision: %v", err)

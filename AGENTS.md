@@ -69,26 +69,26 @@ Kustomize, or OLM — it orchestrates them.
   target has no stable CR (service-level admin APIs, external SaaS,
   configuration that needs a controller-specific bundle). Same spirit
   as the renderer priority above.
-- **Capabilities and interfaces are open extension points.** Packages
-  declare `provides[]` / `requires[]` (capability bindings) and
-  `implements[]` / `bundles[]` (service-config interfaces) using
-  free-form name strings. Gitups core enforces *shape* (non-empty
-  fields, unique names, consistent provider/consumer wiring) but does
-  not hold a closed list of names — new capabilities and interfaces
-  can be coined by convention as new packages ship, without touching
-  gitups core code. Bundles in SRC packages cross-reference interface
-  names so every projected CR has a matching `bundles` entry on the
-  selected SRC at apply time.
-- **Interface projection.**
-  `Provision.spec.repositories[].interfaceResources[]` on a
-  `service-resources` repo synthesises one `ResolvedPackage` per
-  entry, rendered from the provider's `resources/<resourceTemplate>/`
-  directory and routed through the selected SRC via the
-  `managed-resource` intent. SRCs opt into the intent by shipping a
-  `service-resource-controller/managed-resource/descriptor.yaml`. Repo
-  names (after `{{.Env}}` substitution) must be DNS-1123-safe because
-  KRC-synthesised Applications use them as K8s resource names; `gitups
-  check` enforces this.
+- **Capabilities are open extension points.** Packages declare
+  `provides[]` / `requires[]` using free-form capability name strings
+  paired with one `resourceTemplate` on each side. Gitups core
+  enforces *shape* (non-empty fields, unique names, consistent
+  provider/consumer wiring) but does not hold a closed list of names
+  — new capabilities can be coined by convention as new packages
+  ship, without touching gitups core code.
+- **Service-level reconciliation is declarest.** When a package
+  exposes a REST API that should be kept in sync from Git, it ships a
+  declarest metadata bundle and declares
+  `spec.declarestBundle: {name, version, ref?}` in `package.yaml`.
+  Declarest (SRC) is the single canonical reconciler; it uses four
+  generic CRDs (`ResourceRepository`, `ManagedService`,
+  `SecretStore`, `SyncPolicy`) — **no** per-integration CRDs. Full
+  model, including how a Provision composes declarest's four CR
+  templates, is in
+  [agents/references/declarest.md](agents/references/declarest.md).
+  The retired `spec.implements[]` / `spec.bundles[]` /
+  `Provision.spec.repositories[].interfaceResources[]` machinery and
+  the `service-resources` repo type are gone.
 - **Hook ABI is stable.** Call hooks as
   `<script> --phase <phase> --values <json-path> --out <render-dir>`. Hooks
   may write only inside `--out`.

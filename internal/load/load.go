@@ -373,11 +373,6 @@ func ValidateProvision(p *v1.Provision) error {
 		}
 		switch r.Type {
 		case v1.RepoTypeKubernetesResources:
-			// Generic-style vs env-style is inferred from repoRef
-			// presence. ServiceRef is not permitted on this type.
-			if r.ServiceRef != nil {
-				return fmt.Errorf("spec.repositories[%d] (%s): serviceRef is only valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
-			}
 			envRepo := r.RepoRef != nil
 			if envRepo {
 				if r.RepoRef.Name == "" {
@@ -391,50 +386,12 @@ func ValidateProvision(p *v1.Provision) error {
 			if err := validateRepositoryPackages(fmt.Sprintf("spec.repositories[%d].packages", i), r.Packages, envRepo); err != nil {
 				return err
 			}
-		case v1.RepoTypeServiceResources:
-			if r.RepoRef != nil {
-				return fmt.Errorf("spec.repositories[%d] (%s): repoRef is not valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
-			}
-			if len(r.Packages) > 0 {
-				return fmt.Errorf("spec.repositories[%d] (%s): packages is not valid on %q repositories (bindings synthesise content)", i, r.Name, v1.RepoTypeServiceResources)
-			}
-			if r.ServiceRef == nil || r.ServiceRef.Repo == "" || r.ServiceRef.Instance == "" {
-				return fmt.Errorf("spec.repositories[%d] (%s): serviceRef.{repo,instance} is required for %q", i, r.Name, v1.RepoTypeServiceResources)
-			}
-			seenIR := map[string]bool{}
-			for j, ir := range r.InterfaceResources {
-				prefix := fmt.Sprintf("spec.repositories[%d] (%s).interfaceResources[%d]", i, r.Name, j)
-				if ir.Name == "" {
-					return fmt.Errorf("%s.name is required", prefix)
-				}
-				if seenIR[ir.Name] {
-					return fmt.Errorf("%s: duplicate name %q", prefix, ir.Name)
-				}
-				seenIR[ir.Name] = true
-				if ir.Interface == "" || ir.Version == "" {
-					return fmt.Errorf("%s: interface and version are required", prefix)
-				}
-				if err := validateResourceName(ir.Name); err != nil {
-					return fmt.Errorf("%s.name %q: %w", prefix, ir.Name, err)
-				}
-			}
 		default:
-			return fmt.Errorf("spec.repositories[%d].type %q invalid (%s | %s)", i, r.Type, v1.RepoTypeKubernetesResources, v1.RepoTypeServiceResources)
-		}
-		if r.Type != v1.RepoTypeServiceResources && len(r.InterfaceResources) > 0 {
-			return fmt.Errorf("spec.repositories[%d] (%s): interfaceResources is only valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
+			return fmt.Errorf("spec.repositories[%d].type %q invalid (only %q is supported)", i, r.Type, v1.RepoTypeKubernetesResources)
 		}
 	}
 	if err := validateControllers(p.Spec.Controllers, repoNames); err != nil {
 		return err
-	}
-	for i, r := range p.Spec.Repositories {
-		if r.Type != v1.RepoTypeServiceResources || r.ServiceRef == nil {
-			continue
-		}
-		if !repoNames[r.ServiceRef.Repo] {
-			return fmt.Errorf("spec.repositories[%d] (%s): serviceRef.repo %q is not declared in spec.repositories", i, r.Name, r.ServiceRef.Repo)
-		}
 	}
 	return nil
 }
@@ -541,30 +498,6 @@ func validateRepoName(name string) error {
 	last := stripped[len(stripped)-1]
 	if last == '-' || last == '.' {
 		return fmt.Errorf("must not end with '-' or '.'")
-	}
-	return nil
-}
-
-// validateResourceName accepts names for interface-resource decls and
-// projected CRs. Strict DNS-1123 label (<=63 chars; no dots).
-func validateResourceName(name string) error {
-	const maxLen = 63
-	if name == "" {
-		return fmt.Errorf("name is required")
-	}
-	if len(name) > maxLen {
-		return fmt.Errorf("exceeds %d characters", maxLen)
-	}
-	for i, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			// ok
-		default:
-			return fmt.Errorf("illegal character %q at position %d (lowercase alphanumeric or '-' only)", r, i)
-		}
-	}
-	if name[0] == '-' || name[len(name)-1] == '-' {
-		return fmt.Errorf("must not start or end with '-'")
 	}
 	return nil
 }
@@ -677,10 +610,7 @@ func ValidatePackageDefinition(pd *v1.PackageDefinition) error {
 	if err := validateReadinessShape(pd); err != nil {
 		return err
 	}
-	if err := validateImplements(pd); err != nil {
-		return err
-	}
-	if err := validateBundles(pd); err != nil {
+	if err := validateDeclarestBundle(pd); err != nil {
 		return err
 	}
 	if err := validateCompatibility(pd); err != nil {
@@ -741,34 +671,19 @@ func validateReadinessShape(pd *v1.PackageDefinition) error {
 	return nil
 }
 
-// validateImplements is a shape-only check. Interface names are an open
-// extension point: new interfaces can be coined by convention (e.g.
-// "http-proxy", "kv-secret-store", "git-server") without gitups core
-// code changes. The community agrees on shapes out-of-band; gitups core
-// only enforces that every entry is non-empty.
-func validateImplements(pd *v1.PackageDefinition) error {
-	for i, ref := range pd.Spec.Implements {
-		if ref.Interface == "" || ref.Version == "" {
-			return fmt.Errorf("spec.implements[%d]: interface and version are required", i)
-		}
+// validateDeclarestBundle enforces shape for a package's advisory
+// declarest metadata-bundle declaration. The field is informational —
+// gitups core never fetches the bundle — so the check is purely shape.
+func validateDeclarestBundle(pd *v1.PackageDefinition) error {
+	db := pd.Spec.DeclarestBundle
+	if db == nil {
+		return nil
 	}
-	return nil
-}
-
-// validateBundles enforces that only SRC packages may carry bundles and
-// that each bundle entry names its interface + non-empty source. Like
-// validateImplements, the interface name is an open extension point.
-func validateBundles(pd *v1.PackageDefinition) error {
-	if len(pd.Spec.Bundles) > 0 && pd.Spec.Role != v1.RoleSRC {
-		return fmt.Errorf("spec.bundles is only valid for role %q", v1.RoleSRC)
+	if db.Name == "" {
+		return fmt.Errorf("spec.declarestBundle.name is required")
 	}
-	for i, ref := range pd.Spec.Bundles {
-		if ref.Interface == "" || ref.Version == "" {
-			return fmt.Errorf("spec.bundles[%d]: interface and version are required", i)
-		}
-		if ref.Source == "" {
-			return fmt.Errorf("spec.bundles[%d]: source is required", i)
-		}
+	if db.Version == "" {
+		return fmt.Errorf("spec.declarestBundle.version is required")
 	}
 	return nil
 }
