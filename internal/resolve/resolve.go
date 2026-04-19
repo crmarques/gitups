@@ -97,6 +97,12 @@ func Expand(p *v1.Provision, cat *catalog.Catalog, opts Options) (*v1.FullProvis
 	}
 	placeholderList = append(placeholderList, bindingPhs...)
 
+	interfacePhs, err := resolveInterfaceResources(p, cat, envKey, fp, priorByInstance, opts.Force)
+	if err != nil {
+		return nil, err
+	}
+	placeholderList = append(placeholderList, interfacePhs...)
+
 	controllerPhs, err := resolveControllers(p, cat, envKey, fp, priorByInstance, opts.Force)
 	if err != nil {
 		return nil, err
@@ -152,11 +158,12 @@ func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, [
 	for ri, repo := range p.Spec.Repositories {
 		repoName := substituteEnv(repo.Name, envKey)
 		resolvedRepos = append(resolvedRepos, v1.ResolvedRepository{
-			Name:        repoName,
-			Description: repo.Description,
-			Type:        repo.Type,
-			RepoRef:     cloneRepoRef(repo.RepoRef),
-			ServiceRef:  cloneServiceRef(repo.ServiceRef),
+			Name:               repoName,
+			Description:        repo.Description,
+			Type:               repo.Type,
+			RepoRef:            cloneRepoRef(repo.RepoRef),
+			ServiceRef:         cloneServiceRef(repo.ServiceRef),
+			InterfaceResources: cloneInterfaceResources(repo.InterfaceResources),
 		})
 		switch repo.Type {
 		case v1.RepoTypeKubernetesResources:
@@ -216,6 +223,27 @@ func cloneServiceRef(in *v1.ServiceRef) *v1.ServiceRef {
 	}
 	out := *in
 	return &out
+}
+
+func cloneInterfaceResources(in []v1.InterfaceResourceDecl) []v1.InterfaceResourceDecl {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]v1.InterfaceResourceDecl, len(in))
+	for i, ir := range in {
+		out[i] = v1.InterfaceResourceDecl{
+			Name:             ir.Name,
+			Interface:        ir.Interface,
+			Version:          ir.Version,
+			ResourceTemplate: ir.ResourceTemplate,
+			Values:           cloneMap(ir.Values),
+		}
+		if ir.Consumer != nil {
+			c := *ir.Consumer
+			out[i].Consumer = &c
+		}
+	}
+	return out
 }
 
 func installRef(repoName string, pr v1.PackageRef, cat *catalog.Catalog) (ref, error) {

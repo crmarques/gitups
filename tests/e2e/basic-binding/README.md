@@ -32,7 +32,7 @@ runnable without a cluster).
 | Var                       | Default                                                         |
 | ------------------------- | ----------------------------------------------------------------|
 | `KUBE_CONTEXT`            | `kind-basic-binding`                                            |
-| `GITUPS_OUTPUT_DIR`       | `gitups-output-dir`                                             |
+| `GITUPS_OUTPUT_DIR`       | temp dir under `${TMPDIR:-/tmp}`; removed after success         |
 | `METALLB_ADDRESS_POOL`    | `172.18.255.200-172.18.255.250`                                 |
 | `GITOPS_REPO_URL`         | `https://example.invalid/gitops/gitops-controllers-dev.git`     |
 | `GITEA_ARGOCD_BOT_TOKEN`  | `e2e-argocd-bot-token`                                          |

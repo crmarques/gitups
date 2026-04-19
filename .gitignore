@@ -12,6 +12,9 @@
 /gitups
 /gitups.exe
 /full-provision.yaml
+# Default CLI output dir; e2e cases use mktemp temp dirs but a bare `gitups`
+# invocation still writes here. Keep it out of the tree.
+/gitups-output-dir/
 
 # Test and coverage artifacts
 *.test
@@ -35,10 +38,10 @@ profile.out
 *~
 
 # Claude
-/.claude/*
+/.claude/
 
 # Codex
-/.codex/*
+/.codex/
 
 # OS metadata
 .DS_Store

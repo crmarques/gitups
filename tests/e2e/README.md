@@ -41,7 +41,7 @@ available.
 
 | Var                       | Default                                                  | Used by         |
 | ------------------------- | -------------------------------------------------------- | --------------- |
-| `GITUPS_OUTPUT_DIR`       | `gitups-output-dir`                                      | all             |
+| `GITUPS_OUTPUT_DIR`       | temp dir under `${TMPDIR:-/tmp}`; removed after success  | all             |
 | `GITUPS_E2E_APPLY`        | `true`                                                   | all             |
 | `GITUPS_E2E_WAIT_TIMEOUT` | `10m`                                                    | all             |
 | `KUBE_CONTEXT`            | `kind-<case>`                                            | all             |

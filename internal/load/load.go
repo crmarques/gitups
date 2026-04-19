@@ -368,6 +368,9 @@ func ValidateProvision(p *v1.Provision) error {
 			return fmt.Errorf("duplicate repository name %q", r.Name)
 		}
 		repoNames[r.Name] = true
+		if err := validateRepoName(r.Name); err != nil {
+			return fmt.Errorf("spec.repositories[%d].name %q: %w", i, r.Name, err)
+		}
 		switch r.Type {
 		case v1.RepoTypeKubernetesResources:
 			// Generic-style vs env-style is inferred from repoRef
@@ -398,8 +401,28 @@ func ValidateProvision(p *v1.Provision) error {
 			if r.ServiceRef == nil || r.ServiceRef.Repo == "" || r.ServiceRef.Instance == "" {
 				return fmt.Errorf("spec.repositories[%d] (%s): serviceRef.{repo,instance} is required for %q", i, r.Name, v1.RepoTypeServiceResources)
 			}
+			seenIR := map[string]bool{}
+			for j, ir := range r.InterfaceResources {
+				prefix := fmt.Sprintf("spec.repositories[%d] (%s).interfaceResources[%d]", i, r.Name, j)
+				if ir.Name == "" {
+					return fmt.Errorf("%s.name is required", prefix)
+				}
+				if seenIR[ir.Name] {
+					return fmt.Errorf("%s: duplicate name %q", prefix, ir.Name)
+				}
+				seenIR[ir.Name] = true
+				if ir.Interface == "" || ir.Version == "" {
+					return fmt.Errorf("%s: interface and version are required", prefix)
+				}
+				if err := validateResourceName(ir.Name); err != nil {
+					return fmt.Errorf("%s.name %q: %w", prefix, ir.Name, err)
+				}
+			}
 		default:
 			return fmt.Errorf("spec.repositories[%d].type %q invalid (%s | %s)", i, r.Type, v1.RepoTypeKubernetesResources, v1.RepoTypeServiceResources)
+		}
+		if r.Type != v1.RepoTypeServiceResources && len(r.InterfaceResources) > 0 {
+			return fmt.Errorf("spec.repositories[%d] (%s): interfaceResources is only valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
 		}
 	}
 	if err := validateControllers(p.Spec.Controllers, repoNames); err != nil {
@@ -482,6 +505,84 @@ func validRenderer(r string) bool {
 		return true
 	}
 	return false
+}
+
+// validateRepoName enforces that a repository name, once {{.Env}} is
+// substituted, will be safe to embed in Kubernetes resource names
+// (DNS-1123-ish) and on a filesystem path. Accepts the literal
+// "{{.Env}}" token and lowercase alphanumerics + hyphen + dot. Rejects
+// slashes, uppercase letters, underscores, and leading/trailing hyphen
+// or dot.
+//
+// Why at check time: KRC projections (e.g. ArgoCD Applications) use the
+// repo name verbatim as a resource name. A slash in the repo name turns
+// into "invalid resource name: may not contain '/'" at apply time, half
+// a run in. A char-set probe catches it before any files are written.
+func validateRepoName(name string) error {
+	const maxLen = 253
+	stripped := strings.ReplaceAll(name, "{{.Env}}", "x")
+	if stripped == "" {
+		return fmt.Errorf("name must not be empty after {{.Env}} substitution")
+	}
+	if len(stripped) > maxLen {
+		return fmt.Errorf("name exceeds %d characters after {{.Env}} substitution", maxLen)
+	}
+	for i, r := range stripped {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
+			// ok
+		default:
+			return fmt.Errorf("illegal character %q at position %d (lowercase alphanumeric, '-', '.', and the literal '{{.Env}}' token only)", r, i)
+		}
+	}
+	if stripped[0] == '-' || stripped[0] == '.' {
+		return fmt.Errorf("must not start with '-' or '.'")
+	}
+	last := stripped[len(stripped)-1]
+	if last == '-' || last == '.' {
+		return fmt.Errorf("must not end with '-' or '.'")
+	}
+	return nil
+}
+
+// validateResourceName accepts names for interface-resource decls and
+// projected CRs. Strict DNS-1123 label (<=63 chars; no dots).
+func validateResourceName(name string) error {
+	const maxLen = 63
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) > maxLen {
+		return fmt.Errorf("exceeds %d characters", maxLen)
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			// ok
+		default:
+			return fmt.Errorf("illegal character %q at position %d (lowercase alphanumeric or '-' only)", r, i)
+		}
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return fmt.Errorf("must not start or end with '-'")
+	}
+	return nil
+}
+
+// validateCompatibility enforces shape for the optional compatibility
+// block. Semver grammar is not parsed here; apply-time validation
+// against the target cluster is where typos surface.
+func validateCompatibility(pd *v1.PackageDefinition) error {
+	c := pd.Spec.Compatibility
+	if c == nil {
+		return nil
+	}
+	for i, v := range c.Kubernetes {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("spec.compatibility.kubernetes[%d]: entry must not be empty", i)
+		}
+	}
+	return nil
 }
 
 // IsScaffold reports whether a Provision still carries the init-time empty
@@ -580,6 +681,9 @@ func ValidatePackageDefinition(pd *v1.PackageDefinition) error {
 		return err
 	}
 	if err := validateBundles(pd); err != nil {
+		return err
+	}
+	if err := validateCompatibility(pd); err != nil {
 		return err
 	}
 	seenResource := map[string]bool{}

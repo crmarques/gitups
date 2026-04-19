@@ -148,12 +148,93 @@ convention; gitups core only enforces shape (non-empty name, unique
 binding name, consistent provider/consumer wiring). No registry to
 update.
 
-Service-config interfaces declared via `spec.implements[]` (consumer
+Service-config interfaces declared via `spec.implements[]` (provider
 side) and `spec.bundles[]` (SRC side) work the same way — interface
 names like `http-proxy/v1alpha1` are strings agreed on out-of-band
 between package authors and SRC authors. Gitups cross-references them
-at expand time so every `implements` entry has a matching bundle on the
-selected SRC.
+at expand time so every projected CR's interface has a matching bundle
+on the selected SRC.
+
+## Service-config interface projection
+
+A `service-resources` repo carries a `serviceRef: {repo, instance}`
+identifying the workload whose interface it configures, plus an
+`interfaceResources[]` list. Each entry becomes one CR rendered from
+the provider's `resources/<resourceTemplate>/` directory and routed at
+apply time through `spec.controllers.serviceResources`.
+
+```yaml
+- name: services-haproxy-{{.Env}}
+  type: service-resources
+  serviceRef:
+    repo: support-services
+    instance: haproxy          # must be a selected workload in that repo
+  interfaceResources:
+    - name: gitea              # becomes resourceName in the rendered unit
+      interface: http-proxy
+      version: v1alpha1
+      resourceTemplate: backend  # optional; defaults from provider's implements[]
+      consumer:                  # advisory: records intent on the projected unit
+        repo: support-services
+        instance: gitea
+      values:
+        serviceName: gitea-http
+        serviceNamespace: gitea
+        servicePort: 3000
+        host: gitea.dsv.local
+```
+
+Provider-side declaration:
+
+```yaml
+# haproxy/package.yaml
+spec:
+  implements:
+    - interface: http-proxy
+      version: v1alpha1
+      resourceTemplate: backend   # resources/backend/ renders the CR body
+```
+
+SRC-side declaration (Declarest):
+
+```yaml
+# declarest/package.yaml
+spec:
+  bundles:
+    - interface: http-proxy
+      version: v1alpha1
+      source: "ghcr.io/org/declarest-bundles:http-proxy-v0.1.0"
+```
+
+The SRC must also carry a `service-resource-controller/managed-resource/`
+directory so apply-time routing resolves the intent. Gitups's projector
+tags each synthesised unit with
+`controller.{kind: service-resource-controller, intent: managed-resource}`,
+then `apply` invokes the SRC's CLI against the rendered unit dir.
+
+Projection rules:
+
+- The provider package in `serviceRef.{repo, instance}` must `implements`
+  the declared `{interface, version}`.
+- The selected SRC
+  (`Provision.spec.controllers.serviceResources.{repo, instance}`) must
+  `bundles` the same `{interface, version}`.
+- If the decl leaves `resourceTemplate` empty, the projector uses the
+  `resourceTemplate` on the provider's `implements[]` entry, falling
+  back to `<interface>-<version>` as a last resort.
+- Fan-out is per `interfaceResources[]` entry in the repo; projected
+  instance names are `<repoName>-<entry.name>` so two repos (e.g. dev +
+  prod) can both carry a `gitea` backend without colliding.
+
+## Compatibility
+
+Packages may declare `spec.compatibility.kubernetes: ["<constraint>"]`
+(e.g. `">=1.28"`, `"<1.35"`). At `apply` time, gitups queries the
+target cluster's server version (`kubectl version -o json`) and warns
+— non-blocking — when any planned package falls outside its declared
+range. Constraints are parsed as major.minor with the five-op grammar
+(`>=`, `>`, `<=`, `<`, `==`); unrecognised grammars are treated as
+satisfied so new conventions don't false-alarm users.
 
 `package.yaml` — provider side:
 

@@ -20,7 +20,7 @@ func loadFixtures(t *testing.T) (*v1.Provision, *catalog.Catalog) {
 	// baseDir stays at tests/e2e so the Provision's relative source path
 	// (../../../gitups-packages) resolves to the sibling catalog. The
 	// provision fixture itself moved one level deeper; its bytes are
-	// identical to what the e2e run.sh copies into gitups-output-dir/dsv/.
+	// identical to what the e2e run.sh copies into its per-run workspace.
 	baseDir := filepath.Join(repoRoot, "tests/e2e")
 	cat, err := catalog.Build(prov.Spec.Sources, baseDir)
 	if err != nil {
@@ -94,9 +94,8 @@ func TestExpandPlaceholders(t *testing.T) {
 		"spec.packages[argocd-managed-repo-support-services-dsv].resolvedValues.repoURL":   false,
 		"spec.packages[argocd-managed-repo-gitops-controllers-dsv].resolvedValues.repoURL": false,
 		"spec.packages[declarest-config-default].resolvedValues.repoURL":                   false,
-		"spec.packages[keycloak].resolvedValues.adminPassword":                             false,
 		"spec.packages[metallb-config-default].resolvedValues.addressPools[0].cidrs[0]":    false,
-		"spec.packages[vault].resolvedValues.devRootToken":                                 false,
+		"spec.packages[vault].resolvedValues.server.dev.devRootToken":                      false,
 	}
 	for _, ph := range fp.Spec.Placeholders {
 		if _, ok := want[ph.Path]; ok {
@@ -124,14 +123,14 @@ func TestExpandIdempotentPreservesUserEdits(t *testing.T) {
 			rp.ResolvedValues["repoURL"] = "https://git.example.com/" + rp.ResourceName + ".git"
 		case rp.Instance == "declarest-config-default":
 			rp.ResolvedValues["repoURL"] = "https://git.example.com/gitops.git"
-		case rp.Instance == "keycloak":
-			rp.ResolvedValues["adminPassword"] = "keycloak-test"
 		case rp.Instance == "metallb-config-default":
 			pools := rp.ResolvedValues["addressPools"].([]any)
 			pool := pools[0].(map[string]any)
 			pool["cidrs"] = []any{"10.0.0.1-10.0.0.9"}
 		case rp.Instance == "vault":
-			rp.ResolvedValues["devRootToken"] = "vault-test"
+			server := rp.ResolvedValues["server"].(map[string]any)
+			dev := server["dev"].(map[string]any)
+			dev["devRootToken"] = "vault-test"
 		}
 	}
 

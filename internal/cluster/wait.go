@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"time"
 
 	v1 "github.com/crmarques/gitups/api/v1alpha1"
@@ -116,6 +117,7 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 			return ctx.Err()
 		}
 		if time.Now().After(deadline) {
+			surfaceCSVDiagnostics(ctx, kctx, s.Namespace, csv, opts.Out)
 			return fmt.Errorf("timeout waiting for csv %s/%s to Succeed", s.Namespace, csv)
 		}
 		body, err := kubectlGetJSON(ctx, kctx, s.Namespace, "csv", csv)
@@ -126,10 +128,49 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 				fmt.Fprintf(opts.Out, "gitups: csv %s/%s Succeeded\n", s.Namespace, csv)
 				return nil
 			case "Failed":
+				surfaceCSVDiagnostics(ctx, kctx, s.Namespace, csv, opts.Out)
 				return fmt.Errorf("csv %s/%s Failed: %s", s.Namespace, csv, reason)
 			}
 		}
 		sleep(ctx, opts.Interval)
+	}
+}
+
+// surfaceCSVDiagnostics prints the CSV's status phase/message plus the
+// last 40 log lines of every pod labelled olm.owner=<csv>. Best-effort:
+// swallows kubectl errors so that the caller's own error path still
+// reports the original timeout/Failed cause.
+func surfaceCSVDiagnostics(ctx context.Context, kctx, ns, csv string, out io.Writer) {
+	fmt.Fprintf(out, "gitups: diagnostics for csv %s/%s:\n", ns, csv)
+	if body, err := kubectlGetJSON(ctx, kctx, ns, "csv", csv); err == nil {
+		phase, reason := csvPhase(body)
+		fmt.Fprintf(out, "gitups:   csv.status.phase=%q reason=%q\n", phase, reason)
+	}
+	// List pods owned by the CSV; label is set by OLM.
+	selector := "olm.owner=" + csv
+	listArgs := []string{"--context", kctx, "-n", ns, "get", "pods", "-l", selector,
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"|\"}{.status.phase}{\"\\n\"}{end}"}
+	podList, err := exec.CommandContext(ctx, "kubectl", listArgs...).Output()
+	if err != nil || len(podList) == 0 {
+		fmt.Fprintf(out, "gitups:   (no pods labelled %s in %s — skipping log tail)\n", selector, ns)
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(podList)), "\n") {
+		parts := strings.SplitN(line, "|", 2)
+		podName := parts[0]
+		phase := ""
+		if len(parts) > 1 {
+			phase = parts[1]
+		}
+		if podName == "" {
+			continue
+		}
+		fmt.Fprintf(out, "gitups:   pod %s phase=%s — last 40 lines:\n", podName, phase)
+		logArgs := []string{"--context", kctx, "-n", ns, "logs", podName, "--all-containers=true", "--tail=40"}
+		body, _ := exec.CommandContext(ctx, "kubectl", logArgs...).CombinedOutput()
+		for _, l := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
+			fmt.Fprintf(out, "gitups:     %s\n", l)
+		}
 	}
 }
 

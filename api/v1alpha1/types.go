@@ -206,6 +206,36 @@ type RepositoryDecl struct {
 	// interface resources for that package will land here).
 	ServiceRef *ServiceRef  `json:"serviceRef,omitempty"`
 	Packages   []PackageRef `json:"packages,omitempty"`
+	// InterfaceResources declares user-authored service-config CRs that
+	// land in this repo. Valid only on service-resources repos. Each
+	// entry names an interface the serviceRef provider `implements[]`
+	// and picks one of the provider's `resources/<resourceTemplate>/`
+	// templates as the CR shape.
+	InterfaceResources []InterfaceResourceDecl `json:"interfaceResources,omitempty"`
+}
+
+// InterfaceResourceDecl is one service-config CR to synthesise in a
+// service-resources repo. Resolver looks up the provider package
+// (ServiceRef), confirms it implements the named interface/version, and
+// renders the named resource template with the supplied values.
+type InterfaceResourceDecl struct {
+	// Name uniquely identifies this resource within its repo; used as
+	// the resourceName in the rendered unit path.
+	Name string `json:"name"`
+	// Interface and Version must match one of the provider's
+	// spec.implements[] entries.
+	Interface string `json:"interface"`
+	Version   string `json:"version"`
+	// ResourceTemplate optionally overrides the resourceTemplate named
+	// by the matching `implements[]` entry. Empty = use the default.
+	ResourceTemplate string `json:"resourceTemplate,omitempty"`
+	// Consumer is advisory metadata: the package instance this CR is
+	// being created for. Not required at resolve time but recorded on
+	// the projected unit's BindingOrigin for auditability.
+	Consumer *ProviderRef `json:"consumer,omitempty"`
+	// Values are merged over the resource descriptor's defaults to
+	// produce the CR body.
+	Values map[string]any `json:"values,omitempty"`
 }
 
 // ServiceRef identifies the workload instance a service-resources repo
@@ -263,6 +293,10 @@ type ResolvedRepository struct {
 	Type        string         `json:"type,omitempty"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
 	ServiceRef  *ServiceRef    `json:"serviceRef,omitempty"`
+	// InterfaceResources carried over from the Provision so render can
+	// present the user's intent in full-provision.yaml without consulting
+	// the original Provision.
+	InterfaceResources []InterfaceResourceDecl `json:"interfaceResources,omitempty"`
 }
 
 type ResolvedPackage struct {
@@ -389,12 +423,32 @@ type PackageDefinitionSpec struct {
 	// in-cluster SRC operator pulls it at startup. Used at load time
 	// to validate every interface in use has a matching SRC bundle.
 	Bundles []BundleRef `json:"bundles,omitempty"`
+	// Compatibility expresses declared target-cluster constraints.
+	// Fields are shape-only at load time; `gitups apply` probes the
+	// target cluster and warns when a planned unit is outside its
+	// package's declared range. Never consulted during render.
+	Compatibility *Compatibility `json:"compatibility,omitempty"`
+}
+
+// Compatibility declares cluster-environment preconditions for a
+// package. Every entry is a list of semver constraints (same grammar
+// as Helm/go-mod: ">=1.29", "<1.35", "~1.30", "1.32.x", …) that a
+// target cluster must satisfy. Empty list = no constraint.
+type Compatibility struct {
+	// Kubernetes constrains the target cluster's `kubectl version`
+	// output. Empty = any version.
+	Kubernetes []string `json:"kubernetes,omitempty"`
 }
 
 // InterfaceRef pins one gitups-owned service-config interface + version.
+// ResourceTemplate, when set on a package's implements[] entry, names
+// which of the provider's resources/<name>/ templates produces the CR
+// body for this interface. Projector uses it when the
+// InterfaceResourceDecl leaves resourceTemplate empty.
 type InterfaceRef struct {
-	Interface string `json:"interface"`
-	Version   string `json:"version"`
+	Interface        string `json:"interface"`
+	Version          string `json:"version"`
+	ResourceTemplate string `json:"resourceTemplate,omitempty"`
 }
 
 // BundleRef pins one interface-implementing bundle an SRC can reconcile.

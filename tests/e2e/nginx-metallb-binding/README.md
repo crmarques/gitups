@@ -25,7 +25,7 @@ and consumer sides of the synthesized units both land in
 | Var                       | Default                                 |
 | ------------------------- | --------------------------------------- |
 | `KUBE_CONTEXT`            | `kind-nginx-metallb-binding`            |
-| `GITUPS_OUTPUT_DIR`       | `gitups-output-dir`                     |
+| `GITUPS_OUTPUT_DIR`       | temp dir under `${TMPDIR:-/tmp}`; removed after success |
 | `GITUPS_E2E_APPLY`        | `false` (set `true` to also `apply`/`wait`) |
 | `GITUPS_E2E_WAIT_TIMEOUT` | `10m`                                   |
 

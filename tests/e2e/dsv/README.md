@@ -21,7 +21,7 @@ two-stage flow on every renderer in the catalog.
 | Var                       | Default                                                  |
 | ------------------------- | -------------------------------------------------------- |
 | `KUBE_CONTEXT`            | `kind-dsv`                                               |
-| `GITUPS_OUTPUT_DIR`       | `gitups-output-dir`                                      |
+| `GITUPS_OUTPUT_DIR`       | temp dir under `${TMPDIR:-/tmp}`; removed after success  |
 | `METALLB_ADDRESS_POOL`    | `172.18.255.200-172.18.255.250`                          |
 | `GITOPS_REPO_URL`         | `https://example.invalid/gitops/gitops-controllers-dsv.git` |
 | `VAULT_DEV_ROOT_TOKEN`    | `gitups-e2e-root`                                        |

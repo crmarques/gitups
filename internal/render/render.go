@@ -346,6 +346,28 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry, cat *catalog.Cat
 			return renderUnit{}, fmt.Errorf("%s package %q does not implement intent %q",
 				domain, ctrlEntry.Def.Metadata.Name, rp.Controller.Intent)
 		}
+		// managed-resource is interface passthrough: the CR body comes
+		// from the PROVIDER's resources/<resourceTemplate>/ directory,
+		// not from the SRC's intent directory. The SRC's intent dir
+		// just declares "I can reconcile CRs for this intent"; the CR
+		// shape lives with the service that owns the interface.
+		if rp.Controller.Intent == "managed-resource" {
+			orig, ok := entry.LookupDomainUnit(v1.DomainResources, rp.ResourceTemplate)
+			if !ok {
+				return renderUnit{}, fmt.Errorf("managed-resource: provider package %q has no resources/%s/ template",
+					entry.Def.Metadata.Name, rp.ResourceTemplate)
+			}
+			return renderUnit{
+				SourceDir: orig.SourceDir,
+				Renderer:  orig.Descriptor.Renderer,
+				OLM:       orig.Descriptor.OLM,
+				Helm:      orig.Descriptor.Helm,
+				Kustomize: orig.Descriptor.Kustomize,
+				Hooks:     orig.Descriptor.Hooks,
+				Overlays:  append([]string(nil), orig.Descriptor.Overlays...),
+				Readiness: append([]v1.ReadinessCheck(nil), orig.Descriptor.Readiness...),
+			}, nil
+		}
 		readiness := append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...)
 		if orig, ok := entry.LookupDomainUnit(rp.Domain, rp.ResourceTemplate); ok && len(orig.Descriptor.Readiness) > 0 {
 			readiness = append([]v1.ReadinessCheck(nil), orig.Descriptor.Readiness...)

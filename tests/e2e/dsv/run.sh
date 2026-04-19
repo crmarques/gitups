@@ -15,16 +15,36 @@ set -euo pipefail
 
 env_name="dsv"
 kubectl_context="${KUBE_CONTEXT:-kind-${env_name}}"
-output_dir_arg="${GITUPS_OUTPUT_DIR:-gitups-output-dir}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 bin="${repo_root}/bin/gitups"
+package_catalog="${repo_root}/../gitups-packages"
+
+cleanup_generated_output=false
+if [[ -n "${GITUPS_OUTPUT_DIR:-}" ]]; then
+  output_dir_arg="${GITUPS_OUTPUT_DIR}"
+else
+  output_dir_arg="$(mktemp -d "${TMPDIR:-/tmp}/gitups-e2e-${env_name}.XXXXXX")"
+  cleanup_generated_output=true
+fi
 
 case "${output_dir_arg}" in
   /*) output_dir="${output_dir_arg}" ;;
   *) output_dir="${repo_root}/${output_dir_arg}" ;;
 esac
+
+cleanup_output_dir() {
+  local status=$?
+  if [[ "${cleanup_generated_output}" == "true" ]]; then
+    if [[ "${status}" -eq 0 ]]; then
+      rm -rf "${output_dir}"
+    else
+      printf 'tests/e2e/dsv: retained output after failure: %s\n' "${output_dir}" >&2
+    fi
+  fi
+}
+trap cleanup_output_dir EXIT
 
 workspace="${output_dir}/${env_name}"
 provision_src="${script_dir}/provision.yaml"
@@ -41,6 +61,11 @@ if [[ ! -f "${provision_src}" ]]; then
   printf 'tests/e2e/dsv: provision fixture not found: %s\n' "${provision_src}" >&2
   exit 1
 fi
+if [[ ! -d "${package_catalog}" ]]; then
+  printf 'tests/e2e/dsv: package catalog not found: %s\n' "${package_catalog}" >&2
+  exit 1
+fi
+package_catalog="$(cd "${package_catalog}" && pwd)"
 
 for tool in kubectl helm kustomize go; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -56,6 +81,7 @@ fi
 rm -rf "${workspace}"
 mkdir -p "${workspace}"
 cp "${provision_src}" "${workspace}/provision.yaml"
+sed -i "s|path: ../../../gitups-packages|path: ${package_catalog}|" "${workspace}/provision.yaml"
 
 "${bin}" check "${env_name}" --output-dir "${output_dir}"
 "${bin}" expand "${env_name}" --output-dir "${output_dir}" --force

@@ -13,11 +13,13 @@ one another. Gitups expands that intent into `FullProvision`, renders one
 directory tree per logical repo, and can bootstrap a target cluster from
 those rendered trees (kubectl for K8s manifests, SRC CLI for
 service-level configuration). Pushing the rendered trees to a git
-provider is a user-driven step that sits outside gitups.
+provider is first-class via `gitups push`, which reuses the user's
+configured git credentials by default and accepts per-invocation
+overrides for token, username, base URL, and repo-name flattening.
 
-It is scoped to generation and bootstrap apply. It is not a controller
-and does not replace Argo CD, Flux, Declarest, Helm, Kustomize, or OLM —
-it orchestrates them.
+It is scoped to generation, publication (push), and bootstrap apply. It
+is not a controller and does not replace Argo CD, Flux, Declarest, Helm,
+Kustomize, or OLM — it orchestrates them.
 
 ## 2. Non-Negotiable Invariants
 
@@ -75,8 +77,18 @@ it orchestrates them.
   not hold a closed list of names — new capabilities and interfaces
   can be coined by convention as new packages ship, without touching
   gitups core code. Bundles in SRC packages cross-reference interface
-  names so every `implements` in a package has a matching `bundles`
-  entry on the selected SRC at apply time.
+  names so every projected CR has a matching `bundles` entry on the
+  selected SRC at apply time.
+- **Interface projection.**
+  `Provision.spec.repositories[].interfaceResources[]` on a
+  `service-resources` repo synthesises one `ResolvedPackage` per
+  entry, rendered from the provider's `resources/<resourceTemplate>/`
+  directory and routed through the selected SRC via the
+  `managed-resource` intent. SRCs opt into the intent by shipping a
+  `service-resource-controller/managed-resource/descriptor.yaml`. Repo
+  names (after `{{.Env}}` substitution) must be DNS-1123-safe because
+  KRC-synthesised Applications use them as K8s resource names; `gitups
+  check` enforces this.
 - **Hook ABI is stable.** Call hooks as
   `<script> --phase <phase> --values <json-path> --out <render-dir>`. Hooks
   may write only inside `--out`.
@@ -87,7 +99,17 @@ it orchestrates them.
   tags, and upstream URLs must be exact. Never use `latest` or floating ranges.
 - **Cluster access is explicit.** `apply` is the only mutating cluster command.
   `wait` may read cluster state via kubectl. `init`, `expand`, `check`,
-  `generate`, and `status` are cluster-agnostic.
+  `generate`, `push`, and `status` are cluster-agnostic.
+- **Push is the only outbound mutating command.** `push` talks to a git
+  provider (GitHub, GitLab, Gitea, …) to create missing repos and
+  publish rendered trees. It uses the user's existing git credential
+  helpers by default; CLI flags (`--token`, `--user`) override per
+  invocation. `--base-url` is required (e.g. `https://github.com/myorg`
+  or `https://gitea.example.com/myteam`) so there is no implicit
+  provider host. `--flatten` replaces `/` with `-` in rendered repo
+  names for providers that do not support subgroups. Secrets are read
+  from flags/env only — never read from or written to `Provision`,
+  `FullProvision`, or rendered repo trees.
 
 ## 3. Workspace Layout
 
@@ -192,7 +214,8 @@ After coding:
 - YAML: 2-space indent, no tabs, `apiVersion` and `kind` at the top.
 - Filenames: kebab-case YAML/package dirs; snake_case Go files.
 - External tools: render may call `helm` and `kustomize`; `apply`/`wait` may
-  call `kubectl`.
+  call `kubectl`; `push` shells to `git` and makes provider REST calls
+  (GitHub, GitLab, Gitea).
 - Validation: use focused unit tests for narrow changes; use golden tests under
   `testdata/golden/` for rendered output changes; use `make check` for Go or
   build changes.

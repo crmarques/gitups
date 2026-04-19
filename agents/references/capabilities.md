@@ -28,12 +28,40 @@ resource holds the provider's credentials).
 | capability       | provided by | required by           | typical exports                                |
 | ---------------- | ----------- | --------------------- | ---------------------------------------------- |
 | `git-provider`   | gitea       | argocd, declarest     | `url`, `username`, `token` (secret)            |
-| `lb-ip-pool`     | metallb     | nginx-ingress         | `poolName`                                     |
+| `lb-ip-pool`     | metallb     | nginx-ingress, haproxy | `poolName`, `cidrs`                           |
 | `secret-store`   | *(planned — vault)* | *(planned — declarest)* | `address`, `token` (secret), `mountPath` |
 
 Planned entries are not yet wired; do not cite them as existing contracts.
 Track their progress under
 [agents/plans/](../plans/) if they gain formal plans.
+
+### Category → capability map
+
+Use this as a shorthand when adding a new package: a package in a listed
+category usually needs (or offers) the corresponding capability. Add a
+row when a new category coins a capability name.
+
+| `metadata.spec.category` | typical capability role    | capability name |
+| ------------------------ | -------------------------- | --------------- |
+| `network-lb`             | provider                   | `lb-ip-pool`    |
+| `ingress`                | consumer (of `lb-ip-pool`) | `lb-ip-pool`    |
+| `source-control`         | provider                   | `git-provider`  |
+| `gitops-controller`      | consumer                   | `git-provider`  |
+| `secrets`                | provider (planned)         | `secret-store`  |
+| `gitops-controller`      | consumer (planned)         | `secret-store`  |
+| `identity`               | provider (future)          | `oidc-provider` (unwired) |
+
+Two rules keep this list small:
+
+- **Coin a new capability only when a second consumer is imminent.** If a
+  contract has exactly one provider and one consumer that ship together,
+  name it but expect churn; if a third package joins, the name is earning
+  its keep.
+- **Stay per-resource, not per-package.** A capability binds one provider
+  resource template to one consumer resource template. Two capabilities
+  that share a provider but differ in the resource template (e.g., gitea's
+  `user` → argocd's `repo-secret`, gitea's `repo` → argocd's `app-source`)
+  stay separate — don't overload one name with conditional exports.
 
 ## Service-config interfaces
 
@@ -42,14 +70,19 @@ The consumer package declares `implements[]`; the SRC declares
 `bundles[]` for every interface it can reconcile. Expand fails if any
 `implements` entry has no matching `bundles` entry on the selected SRC.
 
-| interface     | version    | kinds     | implemented by            | bundled by           |
-| ------------- | ---------- | --------- | ------------------------- | -------------------- |
-| `http-proxy`  | `v1alpha1` | `Upstream`| *(none yet)*              | *(none yet)*         |
+| interface     | version    | kinds              | implemented by | bundled by        |
+| ------------- | ---------- | ------------------ | -------------- | ----------------- |
+| `http-proxy`  | `v1alpha1` | `HttpProxyBackend` | haproxy        | declarest         |
 
-`http-proxy/v1alpha1` exists as a gitups-owned constant
-([api/v1alpha1/types.go:77-82](../../api/v1alpha1/types.go#L77-L82)) so
-packages can begin adopting it; no package ships an `implements:` or
-`bundles:` block today.
+`http-proxy/v1alpha1` is wired end-to-end: haproxy's `package.yaml`
+carries `spec.implements: [{interface: http-proxy, version: v1alpha1,
+resourceTemplate: backend}]`; declarest's `spec.bundles[]` lists the
+same interface; declarest's `service-resource-controller/managed-resource/`
+directory opts the SRC in to passthrough reconciliation. At expand
+time, every `Provision.spec.repositories[].interfaceResources[]` entry
+targeting that pair synthesises one `HttpProxyBackend` CR in the
+matching service-resources repo, rendered from haproxy's
+`resources/backend/` template and routed through declarest at apply.
 
 ## Naming rules
 
@@ -97,10 +130,53 @@ No Go code change is required at any step.
    beyond shape), add `Interface<Name>` and `Kind<Resource>` constants
    in [types.go:75-82](../../api/v1alpha1/types.go#L75-L82). Otherwise
    skip this step.
-3. Add `spec.implements[]` entries to each consumer package.
+3. On the provider package (e.g. haproxy), add a `spec.implements[]`
+   entry with `interface`, `version`, and an optional
+   `resourceTemplate` naming the `resources/<name>/` directory whose
+   descriptor renders the CR body. The resource template acts as the
+   CR body shape; gitups core does not hold per-interface rendering
+   code.
 4. Add `spec.bundles[]` entries to the SRC package, pointing at the
    bundle image/artifact that reconciles the interface.
-5. Add a row to the interfaces table above.
+5. Ensure the SRC package has a
+   `service-resource-controller/managed-resource/descriptor.yaml` so
+   apply-time routing recognises the intent; gitups's projector tags
+   every synthesised CR with this intent.
+6. Add a row to the interfaces table above.
+
+### How Provisions consume the interface
+
+Users author consumption per-env inside the matching service-resources
+repo declaration:
+
+```yaml
+- name: services-haproxy-{{.Env}}
+  type: service-resources
+  serviceRef:
+    repo: support-services
+    instance: haproxy
+  interfaceResources:
+    - name: gitea
+      interface: http-proxy
+      version: v1alpha1
+      consumer:
+        repo: support-services
+        instance: gitea
+      values:
+        serviceName: gitea-http
+        serviceNamespace: gitea
+        servicePort: 3000
+        host: gitea.dsv.local
+```
+
+`resolveInterfaceResources`
+([internal/resolve/interface_resources.go](../../internal/resolve/interface_resources.go))
+walks every such entry, confirms the provider's `implements[]` covers
+`{interface, version}`, confirms the selected SRC's `bundles[]` does
+too, resolves the provider's `resources/<resourceTemplate>/`
+descriptor (defaulting to `<interface>-<version>` when the
+`resourceTemplate` field is absent on both sides), and emits one
+`ResolvedPackage` per entry tagged with the SRC as its controller.
 
 ## Compatibility
 
