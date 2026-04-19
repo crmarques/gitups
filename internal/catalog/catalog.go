@@ -87,21 +87,67 @@ func validateExportFrom(from string) error {
 }
 
 // Entry pairs a resolved PackageDefinition with the absolute source directory
-// it was loaded from (needed later by the renderer to find install/resource
-// overlays, raw manifests, and scripts).
+// it was loaded from (needed later by the renderer to find overlays, raw
+// manifests, and scripts). Units are keyed by domain (install, resources,
+// kubernetes-resource-controller, service-resource-controller) and then by
+// sub-name (renderer / template / intent).
 type Entry struct {
 	Source     string // source name (e.g. "local")
 	SourceRoot string // absolute path to the source root
 	Dir        string // absolute path to the package dir
 	Def        *v1.PackageDefinition
-	Installs   map[string]Unit
-	Resources  map[string]Unit
+	Domains    map[string]map[string]Unit
+}
+
+// Installs returns the install-domain units (renderer → Unit) for this
+// entry. Nil-safe convenience accessor kept in lockstep with Domains.
+func (e Entry) Installs() map[string]Unit { return e.Domains[v1.DomainInstall] }
+
+// Resources returns the resources-domain units (template → Unit).
+func (e Entry) Resources() map[string]Unit { return e.Domains[v1.DomainResources] }
+
+// KRCIntents returns the KRC-domain intent implementations (intent → Unit).
+func (e Entry) KRCIntents() map[string]Unit { return e.Domains[v1.DomainKRC] }
+
+// SRCIntents returns the SRC-domain intent implementations (intent → Unit).
+func (e Entry) SRCIntents() map[string]Unit { return e.Domains[v1.DomainSRC] }
+
+// LookupDomainUnit returns the Unit in the given domain/sub-name pair, or
+// false if the package doesn't implement it.
+func (e Entry) LookupDomainUnit(domain, subName string) (Unit, bool) {
+	units, ok := e.Domains[domain]
+	if !ok {
+		return Unit{}, false
+	}
+	u, ok := units[subName]
+	return u, ok
 }
 
 type Unit struct {
 	Name       string
 	SourceDir  string
 	Descriptor v1.PackageDescriptorSpec
+}
+
+// knownDomains is the closed set of top-level package directories gitups
+// understands. Any other top-level dir (other than the always-allowed
+// bookkeeping entries below) is a load error so typos fail fast.
+var knownDomains = map[string]struct{}{
+	v1.DomainInstall:   {},
+	v1.DomainResources: {},
+	v1.DomainKRC:       {},
+	v1.DomainSRC:       {},
+}
+
+// isLooseFile is a top-level entry we don't treat as a domain directory —
+// package.yaml and README are always present; anything else alongside them
+// must be a known domain dir.
+func isLooseEntry(name string) bool {
+	switch name {
+	case "package.yaml", "README.md":
+		return true
+	}
+	return false
 }
 
 // Catalog indexes entries by their qualified name: "<source>/<package>".
@@ -173,14 +219,15 @@ func loadFilesystemSource(c *Catalog, name, root string) error {
 		if seen[def.Metadata.Name] {
 			return fmt.Errorf("source %q: duplicate package name %q", name, def.Metadata.Name)
 		}
-		installs, err := loadUnits(filepath.Join(pkgDir, "install"), true)
+		domains, err := loadDomains(pkgDir)
 		if err != nil {
 			return fmt.Errorf("source %q: package %s: %w", name, def.Metadata.Name, err)
 		}
-		resources, err := loadUnits(filepath.Join(pkgDir, "resources"), false)
-		if err != nil {
-			return fmt.Errorf("source %q: package %s: %w", name, def.Metadata.Name, err)
+		if err := validateRoleDomains(name, def, domains); err != nil {
+			return err
 		}
+		installs := domains[v1.DomainInstall]
+		resources := domains[v1.DomainResources]
 		if _, ok := installs[def.Spec.DefaultInstall]; !ok {
 			return fmt.Errorf("source %q: package %s: defaultInstall %q has no install descriptor", name, def.Metadata.Name, def.Spec.DefaultInstall)
 		}
@@ -243,8 +290,78 @@ func loadFilesystemSource(c *Catalog, name, root string) error {
 			SourceRoot: root,
 			Dir:        pkgDir,
 			Def:        def,
-			Installs:   installs,
-			Resources:  resources,
+			Domains:    domains,
+		}
+	}
+	return nil
+}
+
+// loadDomains walks every top-level entry under pkgDir, treats unknown
+// entries as an error, and loads each known-domain directory into a
+// sub-map keyed by unit sub-name (renderer / template / intent).
+func loadDomains(pkgDir string) (map[string]map[string]Unit, error) {
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
+	}
+	out := map[string]map[string]Unit{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			if !isLooseEntry(e.Name()) {
+				// Unknown loose files (not package.yaml/README) are allowed;
+				// they are harmless package-local notes. Only top-level
+				// directories carry domain meaning.
+			}
+			continue
+		}
+		name := e.Name()
+		if _, ok := knownDomains[name]; !ok {
+			return nil, fmt.Errorf("%s: unknown domain directory %q (known: %s, %s, %s, %s)",
+				pkgDir, name,
+				v1.DomainInstall, v1.DomainResources, v1.DomainKRC, v1.DomainSRC)
+		}
+		units, err := loadUnits(filepath.Join(pkgDir, name), name == v1.DomainInstall)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = units
+	}
+	return out, nil
+}
+
+// validateRoleDomains ties the declared role to the domain directories
+// present on disk. A role claim must be matched by the corresponding
+// domain dir (and no conflicting counterpart).
+func validateRoleDomains(source string, def *v1.PackageDefinition, domains map[string]map[string]Unit) error {
+	_, hasKRC := domains[v1.DomainKRC]
+	_, hasSRC := domains[v1.DomainSRC]
+	switch def.Spec.Role {
+	case v1.RoleKRC:
+		if !hasKRC {
+			return fmt.Errorf("source %q: package %s: role %q requires a %q/ directory",
+				source, def.Metadata.Name, def.Spec.Role, v1.DomainKRC)
+		}
+		if hasSRC {
+			return fmt.Errorf("source %q: package %s: role %q cannot coexist with %q/ directory",
+				source, def.Metadata.Name, def.Spec.Role, v1.DomainSRC)
+		}
+	case v1.RoleSRC:
+		if !hasSRC {
+			return fmt.Errorf("source %q: package %s: role %q requires a %q/ directory",
+				source, def.Metadata.Name, def.Spec.Role, v1.DomainSRC)
+		}
+		if hasKRC {
+			return fmt.Errorf("source %q: package %s: role %q cannot coexist with %q/ directory",
+				source, def.Metadata.Name, def.Spec.Role, v1.DomainKRC)
+		}
+	case v1.RoleWorkload:
+		if hasKRC {
+			return fmt.Errorf("source %q: package %s: %q/ directory requires role %q",
+				source, def.Metadata.Name, v1.DomainKRC, v1.RoleKRC)
+		}
+		if hasSRC {
+			return fmt.Errorf("source %q: package %s: %q/ directory requires role %q",
+				source, def.Metadata.Name, v1.DomainSRC, v1.RoleSRC)
 		}
 	}
 	return nil

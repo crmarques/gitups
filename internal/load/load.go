@@ -356,6 +356,10 @@ func ValidateProvision(p *v1.Provision) error {
 		}
 	}
 	repoNames := map[string]bool{}
+	// Repository names may carry the literal "{{.Env}}" token at this
+	// stage; we record both the raw and (when present) the prefix-only
+	// form so controller references can be checked against the on-disk
+	// name the user typed.
 	for i, r := range p.Spec.Repositories {
 		if r.Name == "" {
 			return fmt.Errorf("spec.repositories[%d].name is required", i)
@@ -385,6 +389,41 @@ func ValidateProvision(p *v1.Provision) error {
 		default:
 			return fmt.Errorf("spec.repositories[%d].type %q invalid (k8s-gitops-generic | k8s-gitops-env)", i, r.Type)
 		}
+	}
+	if err := validateControllers(p.Spec.Controllers, repoNames); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateControllers checks the schema-level shape of the Controllers
+// block: every referenced repo must exist in spec.repositories. Role /
+// domain consistency is enforced later by expand once the catalog is
+// loaded.
+func validateControllers(c *v1.Controllers, repoNames map[string]bool) error {
+	if c == nil {
+		return nil
+	}
+	check := func(field string, a *v1.ControllerAssignment) error {
+		if a == nil {
+			return nil
+		}
+		if a.Repo == "" {
+			return fmt.Errorf("spec.controllers.%s.repo is required", field)
+		}
+		if a.Instance == "" {
+			return fmt.Errorf("spec.controllers.%s.instance is required", field)
+		}
+		if !repoNames[a.Repo] {
+			return fmt.Errorf("spec.controllers.%s.repo %q is not declared in spec.repositories", field, a.Repo)
+		}
+		return nil
+	}
+	if err := check("kubernetesResources", c.KubernetesResources); err != nil {
+		return err
+	}
+	if err := check("serviceResources", c.ServiceResources); err != nil {
+		return err
 	}
 	return nil
 }
@@ -500,15 +539,22 @@ func ValidatePackageDefinition(pd *v1.PackageDefinition) error {
 		return fmt.Errorf("metadata.name is required")
 	}
 	switch pd.Spec.Role {
-	case "controller", "workload":
+	case v1.RoleKRC, v1.RoleSRC, v1.RoleWorkload:
 	default:
-		return fmt.Errorf("spec.role %q invalid (controller | workload)", pd.Spec.Role)
+		return fmt.Errorf("spec.role %q invalid (%s | %s | %s)",
+			pd.Spec.Role, v1.RoleKRC, v1.RoleSRC, v1.RoleWorkload)
 	}
 	if pd.Spec.DefaultInstall == "" {
 		return fmt.Errorf("spec.defaultInstall is required")
 	}
 	if !validRenderer(pd.Spec.DefaultInstall) {
 		return fmt.Errorf("spec.defaultInstall %q invalid (olm | kustomize | helm | raw)", pd.Spec.DefaultInstall)
+	}
+	if err := validateControllerCLI(pd); err != nil {
+		return err
+	}
+	if err := validateControllerReadiness(pd); err != nil {
+		return err
 	}
 	seenResource := map[string]bool{}
 	for i, r := range pd.Spec.DefaultResources {
@@ -523,6 +569,42 @@ func ValidatePackageDefinition(pd *v1.PackageDefinition) error {
 			return fmt.Errorf("duplicate default resource %q", key)
 		}
 		seenResource[key] = true
+	}
+	return nil
+}
+
+// validateControllerCLI enforces CLI shape rules per role: SRC must
+// declare a binary, workloads must not declare cli, KRC may optionally
+// declare one. Args are validated lazily at apply-render time.
+func validateControllerCLI(pd *v1.PackageDefinition) error {
+	cli := pd.Spec.CLI
+	switch pd.Spec.Role {
+	case v1.RoleSRC:
+		if cli == nil || cli.Binary == "" {
+			return fmt.Errorf("spec.cli.binary is required for role %q", pd.Spec.Role)
+		}
+	case v1.RoleWorkload:
+		if cli != nil {
+			return fmt.Errorf("spec.cli is only valid for controller packages (role %q or %q)",
+				v1.RoleKRC, v1.RoleSRC)
+		}
+	}
+	return nil
+}
+
+// validateControllerReadiness requires controller packages to declare at
+// least one readiness check so gitups apply knows when the operator is
+// live and handoff is safe.
+func validateControllerReadiness(pd *v1.PackageDefinition) error {
+	if pd.Spec.Role == v1.RoleKRC || pd.Spec.Role == v1.RoleSRC {
+		if len(pd.Spec.Readiness) == 0 {
+			return fmt.Errorf("spec.readiness[] is required for role %q", pd.Spec.Role)
+		}
+		for i, c := range pd.Spec.Readiness {
+			if c.Kind == "" || c.Name == "" || c.Condition == "" {
+				return fmt.Errorf("spec.readiness[%d]: kind, name, and condition are all required", i)
+			}
+		}
 	}
 	return nil
 }

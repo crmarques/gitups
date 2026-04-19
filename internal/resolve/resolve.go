@@ -97,6 +97,12 @@ func Expand(p *v1.Provision, cat *catalog.Catalog, opts Options) (*v1.FullProvis
 	}
 	placeholderList = append(placeholderList, bindingPhs...)
 
+	controllerPhs, err := resolveControllers(p, cat, envKey, fp, priorByInstance, opts.Force)
+	if err != nil {
+		return nil, err
+	}
+	placeholderList = append(placeholderList, controllerPhs...)
+
 	if err := computeApplyWaves(fp); err != nil {
 		return nil, err
 	}
@@ -112,13 +118,14 @@ type ref struct {
 	instance         string
 	repository       string
 	unitType         string
+	domain           string
 	installMethod    string
 	resourceTemplate string
 	resourceName     string
 	entry            catalog.Entry
 	unit             catalog.Unit
 	values           map[string]any
-	roleOverride     string
+	roleOverride     v1.Role
 	// binding-only: extra reason text applied to placeholders at the given
 	// input-key paths, sensitivity flag overrides, a ResolvedPackage.Binding
 	// origin marker, and extra dependsOn strings to append.
@@ -196,7 +203,7 @@ func installRef(repoName string, pr v1.PackageRef, cat *catalog.Catalog) (ref, e
 	if method == "" {
 		method = entry.Def.Spec.DefaultInstall
 	}
-	unit, ok := entry.Installs[method]
+	unit, ok := entry.Installs()[method]
 	if !ok {
 		return ref{}, fmt.Errorf("installMethod %q not supported by %q", method, pr.Template)
 	}
@@ -206,6 +213,7 @@ func installRef(repoName string, pr v1.PackageRef, cat *catalog.Catalog) (ref, e
 		instance:        packageInstance,
 		repository:      repoName,
 		unitType:        v1.UnitTypeInstall,
+		domain:          v1.DomainInstall,
 		installMethod:   method,
 		entry:           entry,
 		unit:            unit,
@@ -225,7 +233,7 @@ func resourceRefs(repoName string, pr v1.PackageRef, cat *catalog.Catalog) ([]re
 	}
 	out := make([]ref, 0, len(resources))
 	for _, rr := range resources {
-		unit, ok := entry.Resources[rr.Template]
+		unit, ok := entry.Resources()[rr.Template]
 		if !ok {
 			return nil, fmt.Errorf("resource template %q not supported by %q", rr.Template, pr.Template)
 		}
@@ -236,6 +244,7 @@ func resourceRefs(repoName string, pr v1.PackageRef, cat *catalog.Catalog) ([]re
 			instance:         resourceInstance(packageInstance, rr.Template, rr.Name),
 			repository:       repoName,
 			unitType:         v1.UnitTypeResource,
+			domain:           v1.DomainResources,
 			resourceTemplate: rr.Template,
 			resourceName:     rr.Name,
 			entry:            entry,
@@ -264,6 +273,20 @@ func resourceInstance(packageInstance, template, name string) string {
 	return packageInstance + "-" + template + "-" + name
 }
 
+// renderedDirFor returns the rendered sub-path for a ref, derived from its
+// domain + unit type. Install units render under install/<method>; every
+// other domain renders under <domain>/<sub-name>/<resource-name> where the
+// sub-name is the resource template (resources/) or intent name (KRC/SRC).
+func renderedDirFor(r ref) string {
+	switch r.unitType {
+	case v1.UnitTypeInstall:
+		return "packages/" + r.packageInstance + "/" + v1.DomainInstall + "/" + r.installMethod
+	case v1.UnitTypeResource:
+		return "packages/" + r.packageInstance + "/" + r.domain + "/" + r.resourceTemplate + "/" + r.resourceName
+	}
+	return ""
+}
+
 func cloneRepoRef(in *v1.RepositoryRef) *v1.RepositoryRef {
 	if in == nil {
 		return nil
@@ -285,10 +308,14 @@ func topoSort(refs []ref) ([]ref, error) {
 			addRefAlias(byName, pkgName+"/install/"+r.installMethod, i)
 			addRefAlias(byName, r.packageInstance+"/install/"+r.installMethod, i)
 		case v1.UnitTypeResource:
-			addRefAlias(byName, pkgName+"/resources/"+r.resourceTemplate, i)
-			addRefAlias(byName, r.packageInstance+"/resources/"+r.resourceTemplate, i)
-			addRefAlias(byName, pkgName+"/resources/"+r.resourceTemplate+"/"+r.resourceName, i)
-			addRefAlias(byName, r.packageInstance+"/resources/"+r.resourceTemplate+"/"+r.resourceName, i)
+			domain := r.domain
+			if domain == "" {
+				domain = v1.DomainResources
+			}
+			addRefAlias(byName, pkgName+"/"+domain+"/"+r.resourceTemplate, i)
+			addRefAlias(byName, r.packageInstance+"/"+domain+"/"+r.resourceTemplate, i)
+			addRefAlias(byName, pkgName+"/"+domain+"/"+r.resourceTemplate+"/"+r.resourceName, i)
+			addRefAlias(byName, r.packageInstance+"/"+domain+"/"+r.resourceTemplate+"/"+r.resourceName, i)
 		}
 	}
 
@@ -390,13 +417,7 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 	if r.roleOverride != "" {
 		role = r.roleOverride
 	}
-	renderedDir := ""
-	switch r.unitType {
-	case v1.UnitTypeInstall:
-		renderedDir = "packages/" + r.packageInstance + "/install/" + r.installMethod
-	case v1.UnitTypeResource:
-		renderedDir = "packages/" + r.packageInstance + "/resources/" + r.resourceTemplate + "/" + r.resourceName
-	}
+	renderedDir := renderedDirFor(r)
 	for k, v := range r.extraReasons {
 		reasons[k] = v
 	}
@@ -411,6 +432,7 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 		Template:         r.template,
 		PackageInstance:  r.packageInstance,
 		UnitType:         r.unitType,
+		Domain:           r.domain,
 		InstallMethod:    r.installMethod,
 		ResourceTemplate: r.resourceTemplate,
 		ResourceName:     r.resourceName,

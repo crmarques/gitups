@@ -67,7 +67,7 @@ func resolveBindings(
 					return nil, fmt.Errorf("%s (%s): consumer package %q does not declare requires for capability %q",
 						loc, b.Name, consumerEntry.Def.Metadata.Name, b.Capability)
 				}
-				consumerUnit, ok := consumerEntry.Resources[req.ResourceTemplate]
+				consumerUnit, ok := consumerEntry.Resources()[req.ResourceTemplate]
 				if !ok {
 					return nil, fmt.Errorf("%s (%s): consumer resourceTemplate %q not found in package %q",
 						loc, b.Name, req.ResourceTemplate, consumerEntry.Def.Metadata.Name)
@@ -82,7 +82,7 @@ func resolveBindings(
 					return nil, fmt.Errorf("%s (%s): provider package %q does not declare provides for capability %q",
 						loc, b.Name, providerEntry.Def.Metadata.Name, b.Capability)
 				}
-				providerUnit, ok := providerEntry.Resources[prov.ResourceTemplate]
+				providerUnit, ok := providerEntry.Resources()[prov.ResourceTemplate]
 				if !ok {
 					return nil, fmt.Errorf("%s (%s): provider resourceTemplate %q not found in package %q",
 						loc, b.Name, prov.ResourceTemplate, providerEntry.Def.Metadata.Name)
@@ -160,6 +160,7 @@ func resolveBindings(
 						instance:         consumerInst,
 						repository:       consumerRepoName,
 						unitType:         v1.UnitTypeResource,
+						domain:           v1.DomainResources,
 						resourceTemplate: req.ResourceTemplate,
 						resourceName:     consumerResName,
 						entry:            consumerEntry,
@@ -181,6 +182,7 @@ func resolveBindings(
 						instance:         providerInst,
 						repository:       providerEnvRepoName,
 						unitType:         v1.UnitTypeResource,
+						domain:           v1.DomainResources,
 						resourceTemplate: prov.ResourceTemplate,
 						resourceName:     providerResName,
 						entry:            providerEntry,

@@ -20,6 +20,41 @@ const (
 	UnitTypeResource = "resource"
 )
 
+// Role identifies a package's position in the controller topology. Every
+// package declares exactly one. The string values are the long kebab form
+// so stand-alone contexts (role values, directory names, JSON kind) are
+// self-describing; the Go constants stay short for contributor ergonomics.
+type Role string
+
+const (
+	// RoleKRC: Kubernetes Resource Controller (e.g. ArgoCD, Flux).
+	// Installs packages by syncing a git source of truth into cluster
+	// manifests. A KRC package carries a "kubernetes-resource-controller/"
+	// domain directory whose children implement KRC intents (managed-repo,
+	// …).
+	RoleKRC Role = "kubernetes-resource-controller"
+	// RoleSRC: Services Resource Controller (e.g. Declarest, Crossplane).
+	// Configures services and bindings by syncing a git source of truth
+	// into managed-service state. An SRC package carries a
+	// "service-resource-controller/" domain directory whose children
+	// implement SRC intents (managed-resource, managed-script, …).
+	RoleSRC Role = "service-resource-controller"
+	// RoleWorkload: every other package — applications, infrastructure
+	// building blocks, capability providers and consumers.
+	RoleWorkload Role = "workload"
+)
+
+// Domain identifies a top-level directory gitups understands inside a
+// package. Presence of the directory is the opt-in; the value at that key
+// is the set of child units keyed by sub-name (renderer / template /
+// intent).
+const (
+	DomainInstall   = "install"
+	DomainResources = "resources"
+	DomainKRC       = "kubernetes-resource-controller"
+	DomainSRC       = "service-resource-controller"
+)
+
 // Renderer identifiers. Every install method and resource descriptor must pick
 // one.
 const (
@@ -45,12 +80,34 @@ type Provision struct {
 type ProvisionSpec struct {
 	// EnvKey is the value substituted for {{.Env}} in repository names. When
 	// empty, {{.Env}} falls back to metadata.name.
-	EnvKey  string          `json:"envKey,omitempty"`
-	Extends *Extends        `json:"extends,omitempty"`
-	Sources []PackageSource `json:"sources"`
+	EnvKey      string          `json:"envKey,omitempty"`
+	Extends     *Extends        `json:"extends,omitempty"`
+	Controllers *Controllers    `json:"controllers,omitempty"`
+	Sources     []PackageSource `json:"sources"`
 	// Repositories enumerates output repos. Generic repos select package
 	// installs; env repos select or derive package resources.
 	Repositories []RepositoryDecl `json:"repositories,omitempty"`
+}
+
+// Controllers assigns the KRC and SRC roles to already-selected package
+// instances elsewhere in the same Provision. Keys use camelCase because
+// the surrounding "controllers:" object makes the concept clear.
+type Controllers struct {
+	KubernetesResources *ControllerAssignment `json:"kubernetesResources,omitempty"`
+	ServiceResources    *ControllerAssignment `json:"serviceResources,omitempty"`
+}
+
+// ControllerAssignment points at a package selected by a repository
+// elsewhere in the same Provision. Shape matches BindingRef.Provider so
+// there is one reference spelling for "a package selected in this
+// Provision."
+type ControllerAssignment struct {
+	// Repo names a repository declared in spec.repositories. {{.Env}}
+	// substitution applies before matching.
+	Repo string `json:"repo"`
+	// Instance matches a packages[].instance (defaults to the template
+	// basename) inside the referenced repository.
+	Instance string `json:"instance"`
 }
 
 // Extends points at a generic Provision whose sources and repositories are
@@ -78,7 +135,7 @@ type PackageSource struct {
 type PackageRef struct {
 	Template      string         `json:"template"`
 	Instance      string         `json:"instance,omitempty"`
-	Role          string         `json:"role,omitempty"`
+	Role          Role           `json:"role,omitempty"`
 	InstallMethod string         `json:"installMethod,omitempty"`
 	Values        map[string]any `json:"values,omitempty"`
 	Resources     []ResourceRef  `json:"resources,omitempty"`
@@ -173,14 +230,19 @@ type ResolvedPackage struct {
 	Template string `json:"template"`
 	// PackageInstance is the service/package instance root used in rendered
 	// paths. Instance remains the unique resolved unit name.
-	PackageInstance  string         `json:"packageInstance,omitempty"`
-	UnitType         string         `json:"unitType"`
+	PackageInstance string `json:"packageInstance,omitempty"`
+	UnitType        string `json:"unitType"`
+	// Domain names the package directory this unit was loaded from. One of
+	// DomainInstall / DomainResources / DomainKRC / DomainSRC. Controls
+	// the rendered output sub-path and which map in the catalog entry the
+	// renderer looks the descriptor up in.
+	Domain           string         `json:"domain"`
 	InstallMethod    string         `json:"installMethod,omitempty"`
 	ResourceTemplate string         `json:"resourceTemplate,omitempty"`
 	ResourceName     string         `json:"resourceName,omitempty"`
 	Repository       string         `json:"repository"`
 	Instance         string         `json:"instance"`
-	Role             string         `json:"role"`
+	Role             Role           `json:"role"`
 	Renderer         string         `json:"renderer"`
 	DependsOn        []string       `json:"dependsOn,omitempty"`
 	ResolvedValues   map[string]any `json:"resolvedValues"`
@@ -192,6 +254,25 @@ type ResolvedPackage struct {
 	// Binding, when set, marks this unit as synthesized by a capability
 	// binding rather than an explicit Provision entry.
 	Binding *BindingOrigin `json:"binding,omitempty"`
+	// Controller, when set, points at the KRC or SRC package instance
+	// that owns this unit at apply time. Populated for units routed
+	// through a controller (installs behind a KRC, resources rewired
+	// through an SRC). Nil for bootstrap-direct units.
+	Controller *ControllerBinding `json:"controller,omitempty"`
+}
+
+// ControllerBinding records which KRC or SRC owns a resolved unit and the
+// intent the controller implements to handle it.
+type ControllerBinding struct {
+	// Kind is the controller role: RoleKRC or RoleSRC.
+	Kind Role `json:"kind"`
+	// Instance is the controller package instance (the package selected
+	// by spec.repositories[].packages[].instance).
+	Instance string `json:"instance"`
+	// Intent is the standard intent name (managed-repo,
+	// managed-resource, managed-script, …) the controller uses to
+	// reconcile this unit.
+	Intent string `json:"intent"`
 }
 
 // BindingOrigin is advisory trace metadata placed on every ResolvedPackage
@@ -229,7 +310,7 @@ type PackageMeta struct {
 }
 
 type PackageDefinitionSpec struct {
-	Role             string        `json:"role"`
+	Role             Role          `json:"role"`
 	Category         string        `json:"category,omitempty"`
 	DefaultInstall   string        `json:"defaultInstall,omitempty"`
 	DefaultResources []ResourceRef `json:"defaultResources,omitempty"`
@@ -242,6 +323,23 @@ type PackageDefinitionSpec struct {
 	// names the resource template instantiated on the consumer side and
 	// maps provider exports into that resource template's inputs.
 	Requires []CapabilityRequire `json:"requires,omitempty"`
+	// CLI describes how gitups invokes this controller's CLI during
+	// bootstrap apply for units it owns. Required when Role is
+	// RoleSRC; optional (and unused today) for RoleKRC. Forbidden for
+	// workload packages.
+	CLI *ControllerCLI `json:"cli,omitempty"`
+	// Readiness lists the cluster-object conditions gitups apply waits on
+	// to decide when the controller itself is Ready and handoff is safe.
+	// Required for RoleKRC and RoleSRC; not read for workloads.
+	Readiness []ReadinessCheck `json:"readiness,omitempty"`
+}
+
+// ControllerCLI describes how gitups invokes a controller's CLI during the
+// bootstrap phase of gitups apply. Tokens in Args are rendered from a fixed
+// template context: {{.KubeContext}}, {{.ManifestPath}}, {{.Namespace}}.
+type ControllerCLI struct {
+	Binary string   `json:"binary"`
+	Args   []string `json:"args,omitempty"`
 }
 
 // CapabilityProvide declares one capability offered by a provider package.

@@ -5,6 +5,7 @@ metadata:
 spec:
   packages:
   - applyWave: 0
+    domain: install
     installMethod: raw
     instance: olm
     packageInstance: olm
@@ -32,10 +33,11 @@ spec:
       podSecurity:
         version: v1.35
       release: v0.42.0
-    role: controller
+    role: workload
     template: local/olm
     unitType: install
   - applyWave: 0
+    domain: install
     installMethod: helm
     instance: metallb
     packageInstance: metallb
@@ -55,6 +57,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - metallb/install
+    domain: install
     installMethod: helm
     instance: nginx-ingress
     packageInstance: nginx-ingress
@@ -80,6 +83,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - metallb/install
+    domain: resources
     instance: metallb-config-default
     packageInstance: metallb
     renderedPaths:
@@ -99,6 +103,7 @@ spec:
     template: local/metallb
     unitType: resource
   - applyWave: 0
+    domain: install
     installMethod: helm
     instance: vault
     packageInstance: vault
@@ -128,6 +133,7 @@ spec:
     template: local/vault
     unitType: install
   - applyWave: 0
+    domain: install
     installMethod: helm
     instance: gitea
     packageInstance: gitea
@@ -156,6 +162,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - olm/install
+    domain: install
     installMethod: olm
     instance: keycloak
     packageInstance: keycloak
@@ -172,6 +179,7 @@ spec:
     template: local/keycloak
     unitType: install
   - applyWave: 0
+    domain: install
     installMethod: helm
     instance: service-mesh
     packageInstance: service-mesh
@@ -191,6 +199,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - vault/install
+    domain: resources
     instance: vault-config-default
     packageInstance: vault
     renderedPaths:
@@ -208,6 +217,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - gitea/install
+    domain: resources
     instance: gitea-config-default
     packageInstance: gitea
     renderedPaths:
@@ -226,6 +236,7 @@ spec:
   - applyWave: 2
     dependsOn:
     - keycloak/install
+    domain: resources
     instance: keycloak-config-default
     packageInstance: keycloak
     renderedPaths:
@@ -243,6 +254,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - service-mesh/install
+    domain: resources
     instance: service-mesh-istiod-default
     packageInstance: service-mesh
     renderedPaths:
@@ -264,6 +276,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - service-mesh/install
+    domain: resources
     instance: service-mesh-config-default
     packageInstance: service-mesh
     renderedPaths:
@@ -282,6 +295,7 @@ spec:
   - applyWave: 1
     dependsOn:
     - olm/install
+    domain: install
     installMethod: olm
     instance: argocd
     packageInstance: argocd
@@ -294,10 +308,11 @@ spec:
       namespace: argocd
       olm:
         startingCSV: argocd-operator.v0.17.0
-    role: controller
+    role: kubernetes-resource-controller
     template: local/argocd
     unitType: install
   - applyWave: 0
+    domain: install
     installMethod: raw
     instance: declarest
     packageInstance: declarest
@@ -312,12 +327,13 @@ spec:
         tag: v0.3.8
       namespace: declarest-system
       replicas: 1
-    role: controller
+    role: service-resource-controller
     template: local/declarest
     unitType: install
   - applyWave: 2
     dependsOn:
     - argocd/install
+    domain: resources
     instance: argocd-instance-default
     packageInstance: argocd
     renderedPaths:
@@ -330,31 +346,13 @@ spec:
       namespace: argocd
     resourceName: default
     resourceTemplate: instance
-    role: controller
-    template: local/argocd
-    unitType: resource
-  - applyWave: 3
-    dependsOn:
-    - argocd/resources/instance
-    instance: argocd-applications-root
-    packageInstance: argocd
-    renderedPaths:
-      dir: packages/argocd/resources/applications/root
-      repo: gitops-controllers-dsv
-    renderer: raw
-    repository: gitops-controllers-dsv
-    resolvedValues:
-      namespace: argocd
-      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
-      targetRevision: HEAD
-    resourceName: root
-    resourceTemplate: applications
-    role: controller
+    role: kubernetes-resource-controller
     template: local/argocd
     unitType: resource
   - applyWave: 1
     dependsOn:
     - declarest/install
+    domain: resources
     instance: declarest-config-default
     packageInstance: declarest
     renderedPaths:
@@ -368,8 +366,138 @@ spec:
       targetRevision: HEAD
     resourceName: default
     resourceTemplate: config
-    role: controller
+    role: service-resource-controller
     template: local/declarest
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-basic-infra
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/basic-infra
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://example.invalid/gitops/basic-infra.git
+      targetRevision: HEAD
+    resourceName: basic-infra
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-basic-infra-dsv
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/basic-infra-dsv
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://example.invalid/gitops/basic-infra-dsv.git
+      targetRevision: HEAD
+    resourceName: basic-infra-dsv
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-support-services
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/support-services
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://example.invalid/gitops/support-services.git
+      targetRevision: HEAD
+    resourceName: support-services
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-support-services-dsv
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/support-services-dsv
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://example.invalid/gitops/support-services-dsv.git
+      targetRevision: HEAD
+    resourceName: support-services-dsv
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-gitops-controllers-dsv
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/gitops-controllers-dsv
+      repo: gitops-controllers-dsv
+    renderer: raw
+    repository: gitops-controllers-dsv
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://example.invalid/gitops/gitops-controllers-dsv.git
+      targetRevision: HEAD
+    resourceName: gitops-controllers-dsv
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
     unitType: resource
   placeholders: []
   repositories:

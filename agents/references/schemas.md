@@ -96,7 +96,7 @@ apiVersion: gitups/v1alpha1
 kind: PackageDefinition
 metadata: {name: metallb, version: 0.0.1}
 spec:
-  role: controller | workload
+  role: kubernetes-resource-controller | service-resource-controller | workload
   category: network-lb
   defaultInstall: olm
   defaultResources:
@@ -104,6 +104,9 @@ spec:
       name: default
   provides: []      # capability contracts offered by this package
   requires: []      # capability contracts consumed by this package
+  # Controller-only fields (role != workload):
+  readiness: []     # ReadinessCheck entries gating bootstrap handoff
+  cli: {}           # ControllerCLI shape; required for role=service-resource-controller
 ```
 
 Install/resource descriptor:

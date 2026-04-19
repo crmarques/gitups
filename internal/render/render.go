@@ -257,7 +257,7 @@ type renderUnit struct {
 func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, error) {
 	switch rp.UnitType {
 	case v1.UnitTypeInstall:
-		u, ok := entry.Installs[rp.InstallMethod]
+		u, ok := entry.LookupDomainUnit(v1.DomainInstall, rp.InstallMethod)
 		if !ok {
 			return renderUnit{}, fmt.Errorf("install method %q not declared by package %q", rp.InstallMethod, entry.Def.Metadata.Name)
 		}
@@ -272,9 +272,13 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, err
 			Readiness: append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...),
 		}, nil
 	case v1.UnitTypeResource:
-		u, ok := entry.Resources[rp.ResourceTemplate]
+		domain := rp.Domain
+		if domain == "" {
+			domain = v1.DomainResources
+		}
+		u, ok := entry.LookupDomainUnit(domain, rp.ResourceTemplate)
 		if !ok {
-			return renderUnit{}, fmt.Errorf("resource template %q not declared by package %q", rp.ResourceTemplate, entry.Def.Metadata.Name)
+			return renderUnit{}, fmt.Errorf("domain %q sub-unit %q not declared by package %q", domain, rp.ResourceTemplate, entry.Def.Metadata.Name)
 		}
 		return renderUnit{
 			SourceDir:            u.SourceDir,

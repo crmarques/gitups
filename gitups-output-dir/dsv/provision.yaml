@@ -3,6 +3,10 @@ kind: Provision
 metadata:
   name: dsv
 spec:
+  controllers:
+    kubernetesResources:
+      repo: gitops-controllers
+      instance: argocd
   sources:
     - name: local
       type: filesystem

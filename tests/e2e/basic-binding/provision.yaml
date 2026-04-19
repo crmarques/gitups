@@ -4,6 +4,10 @@ metadata:
   name: basic-binding
 spec:
   envKey: dev
+  controllers:
+    kubernetesResources:
+      repo: gitops-controllers
+      instance: argocd
   sources:
     - name: local
       type: filesystem

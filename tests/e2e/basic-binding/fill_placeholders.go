@@ -49,16 +49,18 @@ func main() {
 					"cidrs": []any{metallbPool},
 				},
 			}
-		case rp.Instance == "argocd" && rp.UnitType == v1.UnitTypeInstall:
-			rp.ResolvedValues["repoURL"] = gitopsRepoURL
-		case rp.Instance == "argocd-applications-root":
-			rp.ResolvedValues["repoURL"] = gitopsRepoURL
+		case rp.Domain == v1.DomainKRC && rp.ResourceTemplate == "managed-repo":
+			// KRC-synthesised managed-repo units carry a repoURL placeholder;
+			// point each at a per-target git URL derived from the resource
+			// name (which equals the target output repo name).
+			rp.ResolvedValues["repoURL"] = fmt.Sprintf("https://example.invalid/gitops/%s.git", rp.ResourceName)
 		case rp.Binding != nil && rp.Binding.Side == "provider" &&
 			strings.HasPrefix(rp.Instance, "gitea-user-argocd-gitea-bot-"):
 			rp.ResolvedValues["token"] = giteaBotToken
 			providerFilled = true
 		}
 	}
+	_ = gitopsRepoURL // retained for compatibility with run.sh arg order
 	if !providerFilled {
 		die("no provider-side binding resource found for argocd-gitea-bot; expand may have changed")
 	}

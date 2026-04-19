@@ -31,7 +31,7 @@ spec:
       podSecurity:
         version: v1.35
       release: v0.42.0
-    role: controller
+    role: workload
     template: local/olm
     unitType: install
   - installMethod: helm
@@ -280,7 +280,7 @@ spec:
       namespace: argocd
       olm:
         startingCSV: argocd-operator.v0.17.0
-    role: controller
+    role: kubernetes-resource-controller
     template: local/argocd
     unitType: install
   - installMethod: raw
@@ -297,7 +297,7 @@ spec:
         tag: v0.3.8
       namespace: declarest-system
       replicas: 1
-    role: controller
+    role: service-resource-controller
     template: local/declarest
     unitType: install
   - dependsOn:
@@ -314,7 +314,7 @@ spec:
       namespace: argocd
     resourceName: default
     resourceTemplate: instance
-    role: controller
+    role: kubernetes-resource-controller
     template: local/argocd
     unitType: resource
   - dependsOn:
@@ -332,7 +332,7 @@ spec:
       targetRevision: HEAD
     resourceName: root
     resourceTemplate: applications
-    role: controller
+    role: kubernetes-resource-controller
     template: local/argocd
     unitType: resource
   - dependsOn:
@@ -350,7 +350,7 @@ spec:
       targetRevision: HEAD
     resourceName: default
     resourceTemplate: config
-    role: controller
+    role: service-resource-controller
     template: local/declarest
     unitType: resource
   placeholders: []

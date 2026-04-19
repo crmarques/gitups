@@ -1,0 +1,3 @@
+# MetalLB upstream chart defaults are used as-is; IPAddressPool and
+# L2Advertisement objects are managed by gitups overlays rather than the chart.
+{}

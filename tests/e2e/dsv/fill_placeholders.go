@@ -32,15 +32,15 @@ func main() {
 
 	for i := range fp.Spec.Packages {
 		rp := &fp.Spec.Packages[i]
-		switch rp.Instance {
-		case "metallb-config-default":
+		switch {
+		case rp.Instance == "metallb-config-default":
 			rp.ResolvedValues["addressPools"] = []any{
 				map[string]any{
 					"name":  "default",
 					"cidrs": []any{metallbPool},
 				},
 			}
-		case "vault":
+		case rp.Instance == "vault":
 			server, _ := rp.ResolvedValues["server"].(map[string]any)
 			if server == nil {
 				server = map[string]any{}
@@ -52,12 +52,18 @@ func main() {
 				server["dev"] = dev
 			}
 			dev["devRootToken"] = vaultRootToken
-		case "argocd-applications-root", "declarest-config-default":
+		case rp.Instance == "declarest-config-default":
 			rp.ResolvedValues["repoURL"] = gitopsRepoURL
-		case "service-mesh-config-default":
+		case rp.Instance == "service-mesh-config-default":
 			rp.ResolvedValues["meshID"] = "mesh-" + env
+		case rp.Domain == v1.DomainKRC && rp.ResourceTemplate == "managed-repo":
+			// Per-target repoURL for every synthesised KRC managed-repo
+			// Application. Derived from the resource name (= target
+			// repo name) so each Application points at its own repo.
+			rp.ResolvedValues["repoURL"] = fmt.Sprintf("https://example.invalid/gitops/%s.git", rp.ResourceName)
 		}
 	}
+	_ = gitopsRepoURL // preserved for argument-order compatibility with run.sh
 
 	var remaining []string
 	for _, rp := range fp.Spec.Packages {

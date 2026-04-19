@@ -69,8 +69,11 @@ func TestExpandDerivesEnvResourcesFromRepoRef(t *testing.T) {
 	if got["metallb-config-default"] != "basic-infra-dsv/packages/metallb/resources/config/default" {
 		t.Fatalf("derived metallb config path: %q", got["metallb-config-default"])
 	}
-	if got["argocd-applications-root"] != "gitops-controllers-dsv/packages/argocd/resources/applications/root" {
-		t.Fatalf("derived argocd applications path: %q", got["argocd-applications-root"])
+	// KRC synthesis places one managed-repo unit per output repo (except
+	// the KRC's own generic) inside the KRC env repo.
+	wantManaged := "gitops-controllers-dsv/packages/argocd/kubernetes-resource-controller/managed-repo/basic-infra-dsv"
+	if got["argocd-managed-repo-basic-infra-dsv"] != wantManaged {
+		t.Fatalf("KRC managed-repo(basic-infra-dsv) path: %q", got["argocd-managed-repo-basic-infra-dsv"])
 	}
 }
 
@@ -81,12 +84,19 @@ func TestExpandPlaceholders(t *testing.T) {
 		t.Fatalf("expand: %v", err)
 	}
 
+	// Each synthesised managed-repo unit carries a repoURL placeholder;
+	// the fixture produces one per output repo except gitops-controllers
+	// itself (the KRC's own generic).
 	want := map[string]bool{
-		"spec.packages[argocd-applications-root].resolvedValues.repoURL":                false,
-		"spec.packages[declarest-config-default].resolvedValues.repoURL":                false,
-		"spec.packages[keycloak].resolvedValues.adminPassword":                          false,
-		"spec.packages[metallb-config-default].resolvedValues.addressPools[0].cidrs[0]": false,
-		"spec.packages[vault].resolvedValues.devRootToken":                              false,
+		"spec.packages[argocd-managed-repo-basic-infra].resolvedValues.repoURL":            false,
+		"spec.packages[argocd-managed-repo-basic-infra-dsv].resolvedValues.repoURL":        false,
+		"spec.packages[argocd-managed-repo-support-services].resolvedValues.repoURL":       false,
+		"spec.packages[argocd-managed-repo-support-services-dsv].resolvedValues.repoURL":   false,
+		"spec.packages[argocd-managed-repo-gitops-controllers-dsv].resolvedValues.repoURL": false,
+		"spec.packages[declarest-config-default].resolvedValues.repoURL":                   false,
+		"spec.packages[keycloak].resolvedValues.adminPassword":                             false,
+		"spec.packages[metallb-config-default].resolvedValues.addressPools[0].cidrs[0]":    false,
+		"spec.packages[vault].resolvedValues.devRootToken":                                 false,
 	}
 	for _, ph := range fp.Spec.Placeholders {
 		if _, ok := want[ph.Path]; ok {
@@ -109,16 +119,18 @@ func TestExpandIdempotentPreservesUserEdits(t *testing.T) {
 
 	for i := range first.Spec.Packages {
 		rp := &first.Spec.Packages[i]
-		switch rp.Instance {
-		case "argocd-applications-root", "declarest-config-default":
+		switch {
+		case rp.Domain == v1.DomainKRC && rp.ResourceTemplate == "managed-repo":
+			rp.ResolvedValues["repoURL"] = "https://git.example.com/" + rp.ResourceName + ".git"
+		case rp.Instance == "declarest-config-default":
 			rp.ResolvedValues["repoURL"] = "https://git.example.com/gitops.git"
-		case "keycloak":
+		case rp.Instance == "keycloak":
 			rp.ResolvedValues["adminPassword"] = "keycloak-test"
-		case "metallb-config-default":
+		case rp.Instance == "metallb-config-default":
 			pools := rp.ResolvedValues["addressPools"].([]any)
 			pool := pools[0].(map[string]any)
 			pool["cidrs"] = []any{"10.0.0.1-10.0.0.9"}
-		case "vault":
+		case rp.Instance == "vault":
 			rp.ResolvedValues["devRootToken"] = "vault-test"
 		}
 	}
@@ -129,12 +141,13 @@ func TestExpandIdempotentPreservesUserEdits(t *testing.T) {
 	}
 
 	for _, rp := range second.Spec.Packages {
-		switch rp.Instance {
-		case "argocd-applications-root":
-			if got := rp.ResolvedValues["repoURL"]; got != "https://git.example.com/gitops.git" {
-				t.Errorf("argocd.repoURL not preserved: got %v", got)
+		switch {
+		case rp.Instance == "argocd-managed-repo-basic-infra":
+			want := "https://git.example.com/basic-infra.git"
+			if got := rp.ResolvedValues["repoURL"]; got != want {
+				t.Errorf("managed-repo(basic-infra).repoURL not preserved: got %v", got)
 			}
-		case "metallb-config-default":
+		case rp.Instance == "metallb-config-default":
 			pool := rp.ResolvedValues["addressPools"].([]any)[0].(map[string]any)
 			cidrs := pool["cidrs"].([]any)
 			if cidrs[0] != "10.0.0.1-10.0.0.9" {
@@ -154,7 +167,7 @@ func TestExpandForcePreservesPlaceholderFills(t *testing.T) {
 		t.Fatalf("expand: %v", err)
 	}
 	for i := range first.Spec.Packages {
-		if first.Spec.Packages[i].Instance == "argocd-applications-root" {
+		if first.Spec.Packages[i].Instance == "argocd-managed-repo-basic-infra" {
 			first.Spec.Packages[i].ResolvedValues["repoURL"] = "https://user-edit.example.com/"
 		}
 	}
@@ -163,7 +176,7 @@ func TestExpandForcePreservesPlaceholderFills(t *testing.T) {
 		t.Fatalf("force expand: %v", err)
 	}
 	for _, rp := range second.Spec.Packages {
-		if rp.Instance != "argocd-applications-root" {
+		if rp.Instance != "argocd-managed-repo-basic-infra" {
 			continue
 		}
 		if got := rp.ResolvedValues["repoURL"]; got != "https://user-edit.example.com/" {
@@ -174,6 +187,10 @@ func TestExpandForcePreservesPlaceholderFills(t *testing.T) {
 
 func TestExpandRepeatedExplicitResources(t *testing.T) {
 	prov, cat := loadFixtures(t)
+	// Rebuilds the repository set from scratch; clear the controllers
+	// assignment inherited from the base fixture so expand does not
+	// try to validate it against the synthetic repos below.
+	prov.Spec.Controllers = nil
 	prov.Spec.Repositories = []v1.RepositoryDecl{
 		{
 			Name: "base",
@@ -230,6 +247,7 @@ func TestExpandRepeatedExplicitResources(t *testing.T) {
 
 func TestExpandRejectsUnknownTemplate(t *testing.T) {
 	prov, cat := loadFixtures(t)
+	prov.Spec.Controllers = nil
 	prov.Spec.Repositories = []v1.RepositoryDecl{
 		{
 			Name: "base",

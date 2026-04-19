@@ -1,0 +1,36 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: nginx-metallb-binding
+spec:
+  envKey: dsv
+  sources:
+    - name: local
+      type: filesystem
+      path: ../../../gitups-packages
+
+  repositories:
+    - name: basic-infra
+      type: k8s-gitops-generic
+      packages:
+        - template: local/olm
+        - template: local/nginx-ingress
+        - template: local/metallb
+          installMethod: helm
+
+    - name: basic-infra-{{.Env}}
+      type: k8s-gitops-env
+      repoRef:
+        name: basic-infra
+      packages:
+        - template: local/nginx-ingress
+          bindings:
+            - name: nginx-ingress-lb
+              capability: lb-ip-pool
+              provider:
+                repo: basic-infra
+                instance: metallb
+              values:
+                poolName: ingress-pool
+                cidrs:
+                  - 172.18.255.200-172.18.255.210

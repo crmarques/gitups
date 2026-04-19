@@ -41,8 +41,16 @@ not replace Argo CD, Flux, Declarest, Helm, Kustomize, or OLM.
   `spec.envKey`, falling back to `metadata.name`. Env repos with `repoRef` and
   no explicit packages derive each referenced generic package's
   `defaultResources`.
-- **Controllers are packages.** Argo CD, Declarest, and Flux are ordinary
-  packages with `role: controller`; no special paths.
+- **Controllers are first-class.** Every package declares
+  `role: kubernetes-resource-controller | service-resource-controller | workload`.
+  A KRC (ArgoCD, Flux) reconciles git → cluster manifests and carries a
+  `kubernetes-resource-controller/` domain directory. An SRC (Declarest,
+  Crossplane) reconciles git → managed-service state and carries a
+  `service-resource-controller/` domain directory plus `spec.cli`. Other
+  packages are `workload`. `Provision.spec.controllers.{kubernetesResources,serviceResources}`
+  assigns the KRC/SRC roles to already-selected package instances via
+  `{repo, instance}` — same reference shape as `bindings[].provider`.
+  Full design in [agents/plans/krc-src-first-class-controllers.md](agents/plans/krc-src-first-class-controllers.md).
 - **Hook ABI is stable.** Call hooks as
   `<script> --phase <phase> --values <json-path> --out <render-dir>`. Hooks
   may write only inside `--out`.
