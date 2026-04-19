@@ -13,7 +13,7 @@ spec:
   sources:
     - name: local
       type: filesystem
-      path: ../../../gitups-packages
+      path: ../../../gitups-packages/packages
 
   repositories:
     - name: basic-infra

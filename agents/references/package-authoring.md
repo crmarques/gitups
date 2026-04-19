@@ -1,13 +1,17 @@
 # Package Authoring
 
 Use when creating or reviewing packages in the sibling `gitups-packages/`
-catalog.
+catalog. Packages live under `gitups-packages/packages/<name>/` and are
+released independently via per-package git tags (`pkg/<name>/v<version>`).
+The authoritative contract is in `gitups-packages/AGENTS.md` and
+`gitups-packages/docs/`.
 
 ## Rules
 
-- Directory name must match root `package.yaml` `metadata.name`.
-- Keep `metadata.version: 0.0.1` unless maintainers explicitly start release
-  versioning.
+- Directory name must match `package.yaml` `metadata.name`.
+- `metadata.version` is per-package SemVer (`X.Y.Z[-prerelease]`, no leading
+  `v`). Cutting a release tag `pkg/<name>/v<version>` must match
+  `metadata.version` exactly, or the release workflow aborts.
 - One top-level package represents one service/application. Do not split
   `argocd-operator`, `argocd-instance`, or `metallb-config` style packages
   when the service package can own install methods and resources.
@@ -16,7 +20,11 @@ catalog.
   with the same preference order.
 - Put user-tunable settings in descriptor `inputs[]`. Use
   `placeholder: true` plus `placeholderReason` when the user must fill a
-  value.
+  value. For secrets the user is happy to have gitups generate, add a
+  `generator` block (closed kinds: `randomHex`, `randomBase64`, `uuid`)
+  alongside `sensitive: true` and `placeholderReason`. Render still
+  emits the sentinel; `gitups apply --generate-secrets` is the
+  apply-time step that fills generator-bearing placeholders in place.
 - For explicit image references, expose the image repository and tag or digest
   as separate inputs and compose the final reference in the template. Do not
   default any image tag to `latest`; when upstream ships a mutable latest tag,
@@ -135,6 +143,20 @@ spec:
           cidrs: [__GITUPS_PLACEHOLDER__]
       placeholderReason: "LB CIDR range is site-specific"
   dependsOn: [metallb/install]
+```
+
+Auto-generated secret input:
+
+```yaml
+inputs:
+  - name: adminPassword
+    type: string
+    placeholder: true
+    sensitive: true
+    placeholderReason: "Initial admin password; auto-generated on apply"
+    generator:
+      kind: randomBase64
+      length: 32
 ```
 
 Namespace overlay:

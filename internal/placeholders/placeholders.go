@@ -39,24 +39,24 @@ func Contains(v any) bool {
 // for every sentinel string found. Paths use the shape
 // `spec.packages[<instance>].resolvedValues.<dotted.path>`; array indices are
 // appended as `[n]`. Output is sorted by path for determinism.
-func Scan(instance string, values map[string]any, reasons map[string]string, sensitive map[string]bool) []v1.Placeholder {
+func Scan(instance string, values map[string]any, reasons map[string]string, sensitive map[string]bool, generators map[string]*v1.Generator) []v1.Placeholder {
 	root := fmt.Sprintf("spec.packages[%s].resolvedValues", instance)
 	var out []v1.Placeholder
-	walk(root, values, &out, reasons, sensitive)
+	walk(root, values, &out, reasons, sensitive, generators)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-func walk(prefix string, v any, out *[]v1.Placeholder, reasons map[string]string, sensitive map[string]bool) {
+func walk(prefix string, v any, out *[]v1.Placeholder, reasons map[string]string, sensitive map[string]bool, generators map[string]*v1.Generator) {
 	switch t := v.(type) {
 	case string:
 		if t == Sentinel {
 			key := stripRoot(prefix)
-			reason, sens := lookup(key, reasons, sensitive)
+			reason, sens, gen := lookup(key, reasons, sensitive, generators)
 			if reason == "" {
 				reason = "unfilled placeholder"
 			}
-			*out = append(*out, v1.Placeholder{Path: prefix, Reason: reason, Sensitive: sens})
+			*out = append(*out, v1.Placeholder{Path: prefix, Reason: reason, Sensitive: sens, Generator: gen})
 		}
 	case map[string]any:
 		keys := make([]string, 0, len(t))
@@ -65,22 +65,27 @@ func walk(prefix string, v any, out *[]v1.Placeholder, reasons map[string]string
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			walk(prefix+"."+k, t[k], out, reasons, sensitive)
+			walk(prefix+"."+k, t[k], out, reasons, sensitive, generators)
 		}
 	case []any:
 		for i, child := range t {
-			walk(fmt.Sprintf("%s[%d]", prefix, i), child, out, reasons, sensitive)
+			walk(fmt.Sprintf("%s[%d]", prefix, i), child, out, reasons, sensitive, generators)
 		}
 	}
 }
 
-// lookup finds a reason/sensitive flag for a path by trying exact match first
-// and then progressively shorter prefixes (trimming bracket indices and dotted
-// segments). Lets input authors annotate a top-level input like "addressPools"
-// even when the actual sentinel lives at addressPools[0].cidrs[0].
-func lookup(key string, reasons map[string]string, sensitive map[string]bool) (string, bool) {
+// lookup finds reason/sensitive/generator metadata for a path by trying
+// exact match first and then progressively shorter prefixes (trimming
+// bracket indices and dotted segments). Lets input authors annotate a
+// top-level input like "addressPools" even when the actual sentinel
+// lives at addressPools[0].cidrs[0]. Generators only resolve at exact
+// or prefix match — they do not need a reason to be present.
+func lookup(key string, reasons map[string]string, sensitive map[string]bool, generators map[string]*v1.Generator) (string, bool, *v1.Generator) {
 	if r, ok := reasons[key]; ok {
-		return r, sensitive[key]
+		return r, sensitive[key], generators[key]
+	}
+	if g, ok := generators[key]; ok {
+		return "", sensitive[key], g
 	}
 	cur := key
 	for cur != "" {
@@ -88,7 +93,10 @@ func lookup(key string, reasons map[string]string, sensitive map[string]bool) (s
 		if i := strings.LastIndexByte(cur, '['); i >= 0 && strings.HasSuffix(cur, "]") {
 			cur = cur[:i]
 			if r, ok := reasons[cur]; ok {
-				return r, sensitive[cur]
+				return r, sensitive[cur], generators[cur]
+			}
+			if g, ok := generators[cur]; ok {
+				return "", sensitive[cur], g
 			}
 			continue
 		}
@@ -96,13 +104,16 @@ func lookup(key string, reasons map[string]string, sensitive map[string]bool) (s
 		if i := strings.LastIndexByte(cur, '.'); i >= 0 {
 			cur = cur[:i]
 			if r, ok := reasons[cur]; ok {
-				return r, sensitive[cur]
+				return r, sensitive[cur], generators[cur]
+			}
+			if g, ok := generators[cur]; ok {
+				return "", sensitive[cur], g
 			}
 			continue
 		}
 		break
 	}
-	return "", false
+	return "", false, nil
 }
 
 func stripRoot(path string) string {

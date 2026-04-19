@@ -436,6 +436,7 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 	values := map[string]any{}
 	reasons := map[string]string{}
 	sensitive := map[string]bool{}
+	generators := map[string]*v1.Generator{}
 	for _, in := range desc.Inputs {
 		val, hasDefault := inputDefault(in)
 		if in.Placeholder || (in.Required && !hasDefault && val == nil) {
@@ -453,6 +454,9 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 			}
 			reasons[in.Name] = reason
 			sensitive[in.Name] = in.Sensitive
+			if in.Generator != nil {
+				generators[in.Name] = in.Generator
+			}
 		}
 	}
 
@@ -498,7 +502,7 @@ func resolveOne(r ref, prior *v1.ResolvedPackage, forceMode bool) (v1.ResolvedPa
 		Binding:          r.binding,
 	}
 
-	phs := placeholders.Scan(r.instance, values, reasons, sensitive)
+	phs := placeholders.Scan(r.instance, values, reasons, sensitive, generators)
 	return rp, phs, nil
 }
 

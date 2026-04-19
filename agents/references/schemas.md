@@ -41,7 +41,7 @@ spec:
   sources:
     - name: local
       type: filesystem
-      path: ../../../gitups-packages
+      path: ../../../gitups-packages/packages
   repositories:
     - name: basic-infra
       type: k8s-gitops-generic
@@ -133,7 +133,30 @@ spec:
 ```
 
 Input fields: `name`, `type`, `default`, `enum`, `required`, `sensitive`,
-`placeholder`, `placeholderReason`.
+`placeholder`, `placeholderReason`, `generator`.
+
+`generator` is optional metadata for inputs that should be auto-filled at
+apply time (typically secrets). Shape:
+
+```yaml
+generator:
+  kind: randomHex | randomBase64 | uuid
+  length: 32   # characters; ignored for uuid
+```
+
+Closed kind set; defaults: `randomHex` 32 chars (must be even), `randomBase64`
+32 chars, `uuid` v4 with no length knob. Bounds: 0–256 chars. Requires
+`placeholder: true` (or `required: true` with no default) so the input
+actually emits the sentinel that fill replaces. Render never reads
+`generator`; only `gitups apply --generate-secrets` does.
+
+The synthesised `Placeholder` entry carries the input's `generator` so
+apply doesn't re-walk descriptors. `apply --generate-secrets` walks
+`FullProvision.spec.placeholders[]`, fills every entry with a
+`generator` via `crypto/rand`, drops the filled entries from the list,
+and rewrites `full-provision.yaml` in place before the placeholder gate
+runs. Re-expand preserves the generated values via the same path that
+preserves user edits.
 
 ## Capability bindings
 

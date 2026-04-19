@@ -19,7 +19,7 @@ kubectl_context="${KUBE_CONTEXT:-kind-${env_name}}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 bin="${repo_root}/bin/gitups"
-package_catalog="${repo_root}/../gitups-packages"
+package_catalog="${repo_root}/../gitups-packages/packages"
 
 cleanup_generated_output=false
 if [[ -n "${GITUPS_OUTPUT_DIR:-}" ]]; then
@@ -81,7 +81,7 @@ fi
 rm -rf "${workspace}"
 mkdir -p "${workspace}"
 cp "${provision_src}" "${workspace}/provision.yaml"
-sed -i "s|path: ../../../gitups-packages|path: ${package_catalog}|" "${workspace}/provision.yaml"
+sed -i "s|path: ../../../gitups-packages/packages|path: ${package_catalog}|" "${workspace}/provision.yaml"
 
 "${bin}" check "${env_name}" --output-dir "${output_dir}"
 "${bin}" expand "${env_name}" --output-dir "${output_dir}" --force

@@ -125,20 +125,25 @@ gitops-workspace/
     tmp/                   # ignored scratch
     cmd/ internal/ api/ ...
   gitups-packages/         # sibling package catalog, not a subdir
-    <package-name>/
-      package.yaml
-      install/
-        <renderer>/         # olm|kustomize|helm|raw
-          descriptor.yaml
-          raw/ | overlays/ | scripts/
-      resources/
-        <resourceTemplate>/
-          descriptor.yaml
-          raw/ | overlays/ | scripts/
+    packages/               # every package lives here; released independently
+      <package-name>/
+        package.yaml
+        install/
+          <renderer>/       # olm|kustomize|helm|raw
+            descriptor.yaml
+            raw/ | overlays/ | scripts/
+        resources/
+          <resourceTemplate>/
+            descriptor.yaml
+            raw/ | overlays/ | scripts/
+    schemas/ tools/ docs/   # shared infra; see gitups-packages/README.md
 ```
 
 Filesystem package sources are resolved relative to the provision file, usually
-with a path such as `../../../gitups-packages`.
+with a path such as `../../../gitups-packages/packages`. The `packages/`
+segment is required — releases are driven per-package by git tags of the form
+`pkg/<name>/v<version>` and published under
+`ghcr.io/<owner>/gitups-packages/<name>:<version>`.
 
 ## 4. Instruction Files
 
@@ -226,7 +231,11 @@ After coding:
 
 - Not a Kubernetes controller; it does not watch or reconcile in-cluster.
 - Not a Helm/Kustomize/OLM replacement; it orchestrates them.
-- Not a secrets manager; secrets surface as placeholders.
+- Not a secrets manager; secrets surface as placeholders. `gitups apply
+  --generate-secrets` may fill placeholders whose input declared a
+  `generator` block, writing the result back into FullProvision in
+  place. Generation happens at apply time only — never during render —
+  so render stays deterministic and hermetic.
 - Not a general-purpose templating engine; Go templates stay limited to small
   values and overlay wrappers.
 

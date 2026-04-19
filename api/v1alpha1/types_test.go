@@ -16,7 +16,7 @@ func TestProvisionRoundTrip(t *testing.T) {
 		Metadata:   v1.ObjectMeta{Name: "dsv"},
 		Spec: v1.ProvisionSpec{
 			Sources: []v1.PackageSource{
-				{Name: "local", Type: "filesystem", Path: "../gitups-packages"},
+				{Name: "local", Type: "filesystem", Path: "../gitups-packages/packages"},
 			},
 			Repositories: []v1.RepositoryDecl{
 				{
@@ -70,7 +70,7 @@ func TestFullProvisionRoundTrip(t *testing.T) {
 		Spec: v1.FullProvisionSpec{
 			SourceProvisionRef: v1.ObjectMeta{Name: "dsv"},
 			Sources: []v1.PackageSource{
-				{Name: "local", Type: "filesystem", Path: "../gitups-packages"},
+				{Name: "local", Type: "filesystem", Path: "../gitups-packages/packages"},
 			},
 			Repository: v1.RepositoryBlock{Layout: "split", OutputPath: "./out/dsv"},
 			Packages: []v1.ResolvedPackage{

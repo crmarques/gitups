@@ -5,7 +5,7 @@
 //	gitups check    <name> [-d <dir>]                           validate Provision and FullProvision
 //	gitups generate <name> [-d <dir>] [--context c] [--allow-placeholders]
 //	                                                            FullProvision -> repo tree
-//	gitups apply    <name> --to <ctx> [-d <dir>] [--dry-run] [--allow-placeholders]
+//	gitups apply    <name> --to <ctx> [-d <dir>] [--dry-run] [--allow-placeholders] [--generate-secrets]
 //	                                                            kubectl apply -k each repo dir
 //	gitups status   <name> [-d <dir>]                           drift report
 //
@@ -37,6 +37,7 @@ import (
 	"github.com/crmarques/gitups/internal/push"
 	"github.com/crmarques/gitups/internal/render"
 	"github.com/crmarques/gitups/internal/resolve"
+	"github.com/crmarques/gitups/internal/secrets"
 )
 
 const defaultOutputDir = "./gitups-output-dir"
@@ -523,6 +524,7 @@ func newApplyCmd() *cobra.Command {
 		toContext         string
 		dryRun            bool
 		allowPlaceholders bool
+		generateSecrets   bool
 		waitCRDs          bool
 		full              bool
 		waitTimeout       time.Duration
@@ -550,6 +552,11 @@ func newApplyCmd() *cobra.Command {
 			if fp.Metadata.Name != ws.Name {
 				return fmt.Errorf("%s has metadata.name %q but workspace is %q",
 					ws.FullProvision, fp.Metadata.Name, ws.Name)
+			}
+			if generateSecrets {
+				if err := fillGeneratedSecrets(fp, ws.FullProvision, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
 			}
 			if !allowPlaceholders && len(fp.Spec.Placeholders) > 0 {
 				return fmt.Errorf("%d unfilled placeholder(s) in %s (re-run with --allow-placeholders to force)",
@@ -586,11 +593,39 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&toContext, "to", "", "kubectl context to apply into (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "kubectl apply --dry-run=server; no cluster state changes")
 	cmd.Flags().BoolVar(&allowPlaceholders, "allow-placeholders", false, "apply even when placeholders remain in FullProvision")
+	cmd.Flags().BoolVar(&generateSecrets, "generate-secrets", false, "before applying, fill placeholders whose input declared a generator and rewrite FullProvision in place")
 	cmd.Flags().BoolVar(&waitCRDs, "wait-crds", false, "after each repo, wait for its OLM subscriptions to Succeed before the next repo")
 	cmd.Flags().BoolVar(&full, "full", false, "apply the whole rendered tree via kubectl even when spec.controllers declares a KRC/SRC (for SRC-less setups or disaster recovery)")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "per-repo wait budget when --wait-crds is set")
 	cmd.SetContext(context.Background())
 	return cmd
+}
+
+// fillGeneratedSecrets fills every Placeholder whose Generator is set,
+// rewrites FullProvision in place using the same yaml.Marshal pattern
+// expand uses, and prints one line per fill (path + kind, never the
+// value). No-op when nothing has a Generator.
+func fillGeneratedSecrets(fp *v1.FullProvision, fpPath string, out writer) error {
+	results, err := secrets.Fill(fp)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		fmt.Fprintf(out, "gitups: --generate-secrets: no generator-bearing placeholders to fill\n")
+		return nil
+	}
+	body, err := yaml.Marshal(fp)
+	if err != nil {
+		return fmt.Errorf("marshal full-provision: %w", err)
+	}
+	if err := os.WriteFile(fpPath, body, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", fpPath, err)
+	}
+	for _, r := range results {
+		fmt.Fprintf(out, "gitups: generated %s for %s\n", r.Kind, r.Path)
+	}
+	fmt.Fprintf(out, "gitups: --generate-secrets: filled %d placeholder(s); rewrote %s\n", len(results), fpPath)
+	return nil
 }
 
 // applyFullTree keeps the today's kubectl apply -k <repo> per repo
@@ -1346,7 +1381,7 @@ spec:
   sources: []
   # - name: local
   #   type: filesystem
-  #   path: ../../../gitups-packages
+  #   path: ../../../gitups-packages/packages
 
   # Repositories select package installs and environment resources.
   repositories: []

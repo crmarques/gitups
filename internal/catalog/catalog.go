@@ -139,12 +139,23 @@ var knownDomains = map[string]struct{}{
 	v1.DomainSRC:       {},
 }
 
+// ignoredDirs are top-level package directories that the catalog loader
+// silently skips. They carry no runtime meaning but are valid package-local
+// conventions (e.g. the `tests/` smoke-test harness shipped with a package,
+// or `.git`/`.github` when a package is later extracted to its own repo).
+var ignoredDirs = map[string]struct{}{
+	"tests":   {},
+	".git":    {},
+	".github": {},
+}
+
 // isLooseFile is a top-level entry we don't treat as a domain directory —
 // package.yaml and README are always present; anything else alongside them
 // must be a known domain dir.
 func isLooseEntry(name string) bool {
 	switch name {
-	case "package.yaml", "README.md":
+	case "package.yaml", "README.md", "values.schema.json",
+		"CHANGELOG.md", "LICENSE", ".gitignore", ".gitattributes":
 		return true
 	}
 	return false
@@ -315,6 +326,9 @@ func loadDomains(pkgDir string) (map[string]map[string]Unit, error) {
 			continue
 		}
 		name := e.Name()
+		if _, ok := ignoredDirs[name]; ok {
+			continue
+		}
 		if _, ok := knownDomains[name]; !ok {
 			return nil, fmt.Errorf("%s: unknown domain directory %q (known: %s, %s, %s, %s)",
 				pkgDir, name,

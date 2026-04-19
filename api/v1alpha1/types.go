@@ -370,7 +370,31 @@ type Placeholder struct {
 	Path      string `json:"path"`
 	Reason    string `json:"reason"`
 	Sensitive bool   `json:"sensitive"`
+	// Generator, when set, is the autogeneration recipe carried over
+	// from the input that produced this placeholder. `gitups apply
+	// --generate-secrets` reads it to fill the placeholder in place.
+	// Render never consults this field.
+	Generator *Generator `json:"generator,omitempty"`
 }
+
+// Generator declares an apply-time autogeneration recipe for a placeholder
+// input. Closed set of kinds — see Generator* constants. Length is the
+// produced string length in characters; ignored for kinds with a fixed
+// length (uuid).
+type Generator struct {
+	Kind    string `json:"kind"`
+	Length  int    `json:"length,omitempty"`
+	Charset string `json:"charset,omitempty"`
+}
+
+// Generator kind constants. Adding a new kind requires updating the
+// loader validation in internal/load and the generator implementation
+// in internal/secrets.
+const (
+	GeneratorRandomHex    = "randomHex"
+	GeneratorRandomBase64 = "randomBase64"
+	GeneratorUUID         = "uuid"
+)
 
 // PackageDefinition is the on-disk package.yaml shape in the catalog. Render
 // unit details live in install/*/descriptor.yaml and resources/*/descriptor.yaml.
@@ -596,14 +620,15 @@ type KustomizeSpec struct {
 }
 
 type InputSpec struct {
-	Name              string `json:"name"`
-	Type              string `json:"type"`
-	Default           any    `json:"default,omitempty"`
-	Enum              []any  `json:"enum,omitempty"`
-	Required          bool   `json:"required,omitempty"`
-	Sensitive         bool   `json:"sensitive,omitempty"`
-	Placeholder       bool   `json:"placeholder,omitempty"`
-	PlaceholderReason string `json:"placeholderReason,omitempty"`
+	Name              string     `json:"name"`
+	Type              string     `json:"type"`
+	Default           any        `json:"default,omitempty"`
+	Enum              []any      `json:"enum,omitempty"`
+	Required          bool       `json:"required,omitempty"`
+	Sensitive         bool       `json:"sensitive,omitempty"`
+	Placeholder       bool       `json:"placeholder,omitempty"`
+	PlaceholderReason string     `json:"placeholderReason,omitempty"`
+	Generator         *Generator `json:"generator,omitempty"`
 }
 
 type HookSpec struct {

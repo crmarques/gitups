@@ -18,7 +18,7 @@ func loadFixtures(t *testing.T) (*v1.Provision, *catalog.Catalog) {
 		t.Fatalf("load provision: %v", err)
 	}
 	// baseDir stays at tests/e2e so the Provision's relative source path
-	// (../../../gitups-packages) resolves to the sibling catalog. The
+	// (../../../gitups-packages/packages) resolves to the sibling catalog. The
 	// provision fixture itself moved one level deeper; its bytes are
 	// identical to what the e2e run.sh copies into its per-run workspace.
 	baseDir := filepath.Join(repoRoot, "tests/e2e")

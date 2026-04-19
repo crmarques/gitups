@@ -389,5 +389,5 @@ spec:
     name: dsv
   sources:
   - name: local
-    path: ../../../gitups-packages
+    path: ../../../gitups-packages/packages
     type: filesystem

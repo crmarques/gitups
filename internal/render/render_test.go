@@ -51,7 +51,7 @@ func TestRenderRuns(t *testing.T) {
 		t.Fatalf("load full-provision: %v", err)
 	}
 	// baseDir stays at tests/e2e so the fixture's relative source path
-	// (../../../gitups-packages) resolves to the sibling catalog; the
+	// (../../../gitups-packages/packages) resolves to the sibling catalog; the
 	// fixture itself lives one level deeper but is byte-identical to the
 	// workspace copy that e2e runs against.
 	baseDir := filepath.Join(repoRoot, "tests/e2e")

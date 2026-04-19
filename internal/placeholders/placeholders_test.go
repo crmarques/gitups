@@ -37,7 +37,7 @@ func TestScanSortsAndAnnotates(t *testing.T) {
 		"repoURL":      "repo URL",
 		"addressPools": "CIDR",
 	}
-	phs := placeholders.Scan("metallb", values, reasons, map[string]bool{"repoURL": true})
+	phs := placeholders.Scan("metallb", values, reasons, map[string]bool{"repoURL": true}, nil)
 
 	if len(phs) != 2 {
 		t.Fatalf("want 2 placeholders, got %d: %+v", len(phs), phs)
@@ -52,5 +52,45 @@ func TestScanSortsAndAnnotates(t *testing.T) {
 		if ph.Reason == "" {
 			t.Errorf("empty reason on %s", ph.Path)
 		}
+	}
+}
+
+func TestScanCarriesGenerator(t *testing.T) {
+	values := map[string]any{
+		"adminPassword": v1.PlaceholderSentinel,
+		"chart": map[string]any{
+			"apiKey": v1.PlaceholderSentinel,
+		},
+		"manualToken": v1.PlaceholderSentinel,
+	}
+	reasons := map[string]string{
+		"adminPassword": "initial admin password",
+		"manualToken":   "user-supplied token",
+	}
+	sensitive := map[string]bool{"adminPassword": true, "manualToken": true}
+	gen := &v1.Generator{Kind: v1.GeneratorRandomBase64, Length: 32}
+	chartGen := &v1.Generator{Kind: v1.GeneratorUUID}
+	generators := map[string]*v1.Generator{
+		"adminPassword": gen,
+		"chart":         chartGen, // top-level prefix; chart.apiKey should resolve to it
+	}
+
+	phs := placeholders.Scan("argocd", values, reasons, sensitive, generators)
+
+	if len(phs) != 3 {
+		t.Fatalf("want 3 placeholders, got %d: %+v", len(phs), phs)
+	}
+	got := map[string]*v1.Generator{}
+	for _, ph := range phs {
+		got[ph.Path] = ph.Generator
+	}
+	if g := got["spec.packages[argocd].resolvedValues.adminPassword"]; g != gen {
+		t.Errorf("adminPassword generator not carried; got %+v", g)
+	}
+	if g := got["spec.packages[argocd].resolvedValues.chart.apiKey"]; g != chartGen {
+		t.Errorf("chart.apiKey did not inherit chart's generator; got %+v", g)
+	}
+	if g := got["spec.packages[argocd].resolvedValues.manualToken"]; g != nil {
+		t.Errorf("manualToken should have no generator; got %+v", g)
 	}
 }

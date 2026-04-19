@@ -792,8 +792,47 @@ func ValidatePackageDescriptor(d *v1.PackageDescriptor) error {
 			return fmt.Errorf("duplicate input %q", in.Name)
 		}
 		inputNames[in.Name] = true
+		if in.Generator != nil {
+			if err := validateGenerator(fmt.Sprintf("spec.inputs[%d] (%s).generator", i, in.Name), *in.Generator); err != nil {
+				return err
+			}
+			if !in.Placeholder && !in.Required {
+				return fmt.Errorf("spec.inputs[%d] (%s): generator requires placeholder=true or required=true", i, in.Name)
+			}
+		}
 	}
 	return validateRenderable("spec", d.Spec.Renderer, d.Spec.OLM, d.Spec.Helm, d.Spec.Kustomize)
+}
+
+// validateGenerator enforces the closed Generator.Kind set and per-kind
+// length bounds. Bounds match internal/secrets so an invalid descriptor
+// fails at load time rather than at apply time.
+func validateGenerator(prefix string, g v1.Generator) error {
+	switch g.Kind {
+	case v1.GeneratorRandomHex:
+		if g.Length < 0 || g.Length > 256 {
+			return fmt.Errorf("%s: length %d out of range (0-256)", prefix, g.Length)
+		}
+		if g.Length%2 != 0 {
+			return fmt.Errorf("%s: length %d must be even for kind %q", prefix, g.Length, g.Kind)
+		}
+	case v1.GeneratorRandomBase64:
+		if g.Length < 0 || g.Length > 256 {
+			return fmt.Errorf("%s: length %d out of range (0-256)", prefix, g.Length)
+		}
+	case v1.GeneratorUUID:
+		if g.Length != 0 {
+			return fmt.Errorf("%s: length is not configurable for kind %q", prefix, g.Kind)
+		}
+		if g.Charset != "" {
+			return fmt.Errorf("%s: charset is not configurable for kind %q", prefix, g.Kind)
+		}
+	case "":
+		return fmt.Errorf("%s: kind is required", prefix)
+	default:
+		return fmt.Errorf("%s: unknown kind %q (want %q | %q | %q)", prefix, g.Kind, v1.GeneratorRandomHex, v1.GeneratorRandomBase64, v1.GeneratorUUID)
+	}
+	return nil
 }
 
 func validateRenderable(prefix, renderer string, olm *v1.OLMSpec, helm *v1.HelmSpec, kustomize *v1.KustomizeSpec) error {
