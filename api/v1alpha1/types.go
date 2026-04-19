@@ -47,12 +47,38 @@ const (
 // Domain identifies a top-level directory gitups understands inside a
 // package. Presence of the directory is the opt-in; the value at that key
 // is the set of child units keyed by sub-name (renderer / template /
-// intent).
+// intent). DomainServiceConfig is not a package-level directory — it is
+// the virtual domain carried on a ResolvedPackage routed to a
+// service-resources repo.
 const (
-	DomainInstall   = "install"
-	DomainResources = "resources"
-	DomainKRC       = "kubernetes-resource-controller"
-	DomainSRC       = "service-resource-controller"
+	DomainInstall       = "install"
+	DomainResources     = "resources"
+	DomainKRC           = "kubernetes-resource-controller"
+	DomainSRC           = "service-resource-controller"
+	DomainServiceConfig = "service-config"
+)
+
+// Repository type values accepted by Provision.spec.repositories[].type.
+// Generic vs env for KubernetesResources is inferred from repoRef presence:
+// env repos carry repoRef, generic repos do not.
+const (
+	// RepoTypeKubernetesResources: any repo whose contents are K8s
+	// manifests (supersedes the previous generic/env split).
+	RepoTypeKubernetesResources = "kubernetes-resources"
+	// RepoTypeServiceResources: SRC-managed config repo. One per
+	// configurable service. Carries interface-shaped manifests.
+	RepoTypeServiceResources = "service-resources"
+)
+
+// Service-config interface constants. Gitups owns the closed set so
+// packages can declare compatible configurability surfaces without
+// stringly-typed mistakes.
+const (
+	InterfaceHTTPProxy         = "http-proxy"
+	InterfaceHTTPProxyV1Alpha1 = "v1alpha1"
+
+	// Kind constants for the http-proxy interface.
+	KindUpstream = "Upstream"
 )
 
 // Renderer identifiers. Every install method and resource descriptor must pick
@@ -175,7 +201,19 @@ type RepositoryDecl struct {
 	Description string         `json:"description,omitempty"`
 	Type        string         `json:"type"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
-	Packages    []PackageRef   `json:"packages,omitempty"`
+	// ServiceRef is set only on service-resources repos and points at
+	// the workload package the repo is configuring (service-config
+	// interface resources for that package will land here).
+	ServiceRef *ServiceRef  `json:"serviceRef,omitempty"`
+	Packages   []PackageRef `json:"packages,omitempty"`
+}
+
+// ServiceRef identifies the workload instance a service-resources repo
+// owns configuration for. Shape matches ControllerAssignment /
+// ProviderRef — one reference spelling across the schema.
+type ServiceRef struct {
+	Repo     string `json:"repo"`
+	Instance string `json:"instance"`
 }
 
 type RepositoryRef struct {
@@ -224,6 +262,7 @@ type ResolvedRepository struct {
 	Description string         `json:"description,omitempty"`
 	Type        string         `json:"type,omitempty"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
+	ServiceRef  *ServiceRef    `json:"serviceRef,omitempty"`
 }
 
 type ResolvedPackage struct {
@@ -269,6 +308,10 @@ type ControllerBinding struct {
 	// Instance is the controller package instance (the package selected
 	// by spec.repositories[].packages[].instance).
 	Instance string `json:"instance"`
+	// Template is the controller package's qualified catalog key
+	// (e.g. "local/declarest"). Carried so the renderer can look up
+	// the controller's domain unit without reopening the Provision.
+	Template string `json:"template,omitempty"`
 	// Intent is the standard intent name (managed-repo,
 	// managed-resource, managed-script, …) the controller uses to
 	// reconcile this unit.
@@ -328,10 +371,39 @@ type PackageDefinitionSpec struct {
 	// RoleSRC; optional (and unused today) for RoleKRC. Forbidden for
 	// workload packages.
 	CLI *ControllerCLI `json:"cli,omitempty"`
-	// Readiness lists the cluster-object conditions gitups apply waits on
-	// to decide when the controller itself is Ready and handoff is safe.
-	// Required for RoleKRC and RoleSRC; not read for workloads.
+	// Readiness lists the cluster-object conditions signalling this
+	// package is done installing and ready to accept config. Required
+	// for RoleKRC and RoleSRC (gitups apply gates handoff on these).
+	// Optional on workloads — when present, downstream consumers can
+	// reference the provider's readiness state.
 	Readiness []ReadinessCheck `json:"readiness,omitempty"`
+	// Implements lists the service-config interfaces this package
+	// exposes. Used by the resolver to route binding-synthesised
+	// consumer resources into a matching service-resources repo with
+	// the right CR shape. Only interfaces in the gitups-owned set are
+	// accepted at load time.
+	Implements []InterfaceRef `json:"implements,omitempty"`
+	// Bundles (SRC-only) lists the service-config interfaces this
+	// controller can reconcile at runtime via an external bundle.
+	// Advisory metadata: gitups does not fetch the bundle; the
+	// in-cluster SRC operator pulls it at startup. Used at load time
+	// to validate every interface in use has a matching SRC bundle.
+	Bundles []BundleRef `json:"bundles,omitempty"`
+}
+
+// InterfaceRef pins one gitups-owned service-config interface + version.
+type InterfaceRef struct {
+	Interface string `json:"interface"`
+	Version   string `json:"version"`
+}
+
+// BundleRef pins one interface-implementing bundle an SRC can reconcile.
+type BundleRef struct {
+	Interface string `json:"interface"`
+	Version   string `json:"version"`
+	// Source is the bundle image/artifact reference (e.g.
+	// "ghcr.io/org/bundle-name:v0.1.0"). Advisory today.
+	Source string `json:"source"`
 }
 
 // ControllerCLI describes how gitups invokes a controller's CLI during the

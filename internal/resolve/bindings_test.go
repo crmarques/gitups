@@ -60,33 +60,34 @@ func TestExpandBindingFanOutPerEnv(t *testing.T) {
 	prov.Spec.Repositories = []v1.RepositoryDecl{
 		{
 			Name: "support-services",
-			Type: "k8s-gitops-generic",
+			Type: "kubernetes-resources",
 			Packages: []v1.PackageRef{
 				{Template: "local/gitea"},
 			},
 		},
 		{
 			Name:     "support-services-dsv",
-			Type:     "k8s-gitops-env",
+			Type:     "kubernetes-resources",
 			RepoRef:  &v1.RepositoryRef{Name: "support-services"},
 			Packages: []v1.PackageRef{{Template: "local/gitea", Resources: []v1.ResourceRef{}}},
 		},
 		{
 			Name:     "support-services-alt",
-			Type:     "k8s-gitops-env",
+			Type:     "kubernetes-resources",
 			RepoRef:  &v1.RepositoryRef{Name: "support-services"},
 			Packages: []v1.PackageRef{{Template: "local/gitea", Instance: "gitea-alt", Resources: []v1.ResourceRef{}}},
 		},
 		{
 			Name: "gitops-controllers",
-			Type: "k8s-gitops-generic",
+			Type: "kubernetes-resources",
 			Packages: []v1.PackageRef{
 				{Template: "local/argocd", InstallMethod: "helm"},
+				{Template: "local/declarest"},
 			},
 		},
 		{
 			Name:    "gitops-controllers-dsv",
-			Type:    "k8s-gitops-env",
+			Type:    "kubernetes-resources",
 			RepoRef: &v1.RepositoryRef{Name: "gitops-controllers"},
 			Packages: []v1.PackageRef{{
 				Template:      "local/argocd",

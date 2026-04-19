@@ -135,11 +135,11 @@ spec:
   placeholders: null
   repositories:
   - name: basic-infra
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - name: basic-infra-dsv
     repoRef:
       name: basic-infra
-    type: k8s-gitops-env
+    type: kubernetes-resources
   repository:
     layout: split
     outputPath: ./out/nginx-metallb-binding

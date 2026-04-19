@@ -11,7 +11,7 @@ spec:
 
   repositories:
     - name: basic-infra
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages:
         - template: local/olm
         - template: local/nginx-ingress
@@ -19,7 +19,7 @@ spec:
           installMethod: helm
 
     - name: basic-infra-{{.Env}}
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef:
         name: basic-infra
       packages:

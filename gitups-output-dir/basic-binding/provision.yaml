@@ -8,6 +8,9 @@ spec:
     kubernetesResources:
       repo: gitops-controllers
       instance: argocd
+    serviceResources:
+      repo: gitops-controllers
+      instance: declarest
   sources:
     - name: local
       type: filesystem
@@ -15,7 +18,7 @@ spec:
 
   repositories:
     - name: basic-infra
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages:
         - template: local/olm
         - template: local/nginx-ingress
@@ -23,28 +26,29 @@ spec:
           installMethod: helm
 
     - name: basic-infra-{{.Env}}
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef:
         name: basic-infra
 
     - name: support-services
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages:
         - template: local/gitea
 
     - name: support-services-{{.Env}}
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef:
         name: support-services
 
     - name: gitops-controllers
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages:
         - template: local/argocd
           installMethod: helm
+        - template: local/declarest
 
     - name: gitops-controllers-{{.Env}}
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef:
         name: gitops-controllers
       packages:

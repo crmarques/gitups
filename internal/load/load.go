@@ -369,29 +369,49 @@ func ValidateProvision(p *v1.Provision) error {
 		}
 		repoNames[r.Name] = true
 		switch r.Type {
-		case "k8s-gitops-generic":
+		case v1.RepoTypeKubernetesResources:
+			// Generic-style vs env-style is inferred from repoRef
+			// presence. ServiceRef is not permitted on this type.
+			if r.ServiceRef != nil {
+				return fmt.Errorf("spec.repositories[%d] (%s): serviceRef is only valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
+			}
+			envRepo := r.RepoRef != nil
+			if envRepo {
+				if r.RepoRef.Name == "" {
+					return fmt.Errorf("spec.repositories[%d] (%s): repoRef.name is required when repoRef is set", i, r.Name)
+				}
+			} else {
+				if len(r.Packages) == 0 {
+					return fmt.Errorf("spec.repositories[%d] (%s): packages is required on a generic %s repository", i, r.Name, v1.RepoTypeKubernetesResources)
+				}
+			}
+			if err := validateRepositoryPackages(fmt.Sprintf("spec.repositories[%d].packages", i), r.Packages, envRepo); err != nil {
+				return err
+			}
+		case v1.RepoTypeServiceResources:
 			if r.RepoRef != nil {
-				return fmt.Errorf("spec.repositories[%d] (%s): repoRef is only valid on k8s-gitops-env repositories", i, r.Name)
+				return fmt.Errorf("spec.repositories[%d] (%s): repoRef is not valid on %q repositories", i, r.Name, v1.RepoTypeServiceResources)
 			}
-			if len(r.Packages) == 0 {
-				return fmt.Errorf("spec.repositories[%d] (%s): packages is required for k8s-gitops-generic", i, r.Name)
+			if len(r.Packages) > 0 {
+				return fmt.Errorf("spec.repositories[%d] (%s): packages is not valid on %q repositories (bindings synthesise content)", i, r.Name, v1.RepoTypeServiceResources)
 			}
-			if err := validateRepositoryPackages(fmt.Sprintf("spec.repositories[%d].packages", i), r.Packages, false); err != nil {
-				return err
-			}
-		case "k8s-gitops-env":
-			if r.RepoRef == nil || r.RepoRef.Name == "" {
-				return fmt.Errorf("spec.repositories[%d] (%s): repoRef.name is required for k8s-gitops-env", i, r.Name)
-			}
-			if err := validateRepositoryPackages(fmt.Sprintf("spec.repositories[%d].packages", i), r.Packages, true); err != nil {
-				return err
+			if r.ServiceRef == nil || r.ServiceRef.Repo == "" || r.ServiceRef.Instance == "" {
+				return fmt.Errorf("spec.repositories[%d] (%s): serviceRef.{repo,instance} is required for %q", i, r.Name, v1.RepoTypeServiceResources)
 			}
 		default:
-			return fmt.Errorf("spec.repositories[%d].type %q invalid (k8s-gitops-generic | k8s-gitops-env)", i, r.Type)
+			return fmt.Errorf("spec.repositories[%d].type %q invalid (%s | %s)", i, r.Type, v1.RepoTypeKubernetesResources, v1.RepoTypeServiceResources)
 		}
 	}
 	if err := validateControllers(p.Spec.Controllers, repoNames); err != nil {
 		return err
+	}
+	for i, r := range p.Spec.Repositories {
+		if r.Type != v1.RepoTypeServiceResources || r.ServiceRef == nil {
+			continue
+		}
+		if !repoNames[r.ServiceRef.Repo] {
+			return fmt.Errorf("spec.repositories[%d] (%s): serviceRef.repo %q is not declared in spec.repositories", i, r.Name, r.ServiceRef.Repo)
+		}
 	}
 	return nil
 }
@@ -438,10 +458,10 @@ func validateRepositoryPackages(prefix string, packages []v1.PackageRef, envRepo
 			return fmt.Errorf("%s.installMethod %q invalid (olm | kustomize | helm | raw)", pp, pr.InstallMethod)
 		}
 		if envRepo && pr.InstallMethod != "" {
-			return fmt.Errorf("%s.installMethod is only valid on k8s-gitops-generic repositories", pp)
+			return fmt.Errorf("%s.installMethod is only valid on generic %s repositories (no repoRef)", pp, v1.RepoTypeKubernetesResources)
 		}
 		if !envRepo && len(pr.Resources) > 0 {
-			return fmt.Errorf("%s.resources is only valid on k8s-gitops-env repositories", pp)
+			return fmt.Errorf("%s.resources is only valid on env %s repositories (with repoRef)", pp, v1.RepoTypeKubernetesResources)
 		}
 		for j, r := range pr.Resources {
 			rp := fmt.Sprintf("%s.resources[%d]", pp, j)
@@ -553,7 +573,13 @@ func ValidatePackageDefinition(pd *v1.PackageDefinition) error {
 	if err := validateControllerCLI(pd); err != nil {
 		return err
 	}
-	if err := validateControllerReadiness(pd); err != nil {
+	if err := validateReadinessShape(pd); err != nil {
+		return err
+	}
+	if err := validateImplements(pd); err != nil {
+		return err
+	}
+	if err := validateBundles(pd); err != nil {
 		return err
 	}
 	seenResource := map[string]bool{}
@@ -592,18 +618,52 @@ func validateControllerCLI(pd *v1.PackageDefinition) error {
 	return nil
 }
 
-// validateControllerReadiness requires controller packages to declare at
-// least one readiness check so gitups apply knows when the operator is
-// live and handoff is safe.
-func validateControllerReadiness(pd *v1.PackageDefinition) error {
+// validateReadinessShape runs on every role. Controllers (KRC/SRC) MUST
+// declare at least one readiness check so gitups apply knows when to
+// hand off. Workloads MAY declare readiness — when present it is
+// validated for shape and consumed downstream (e.g. binding-synthesised
+// units reference the provider's readiness).
+func validateReadinessShape(pd *v1.PackageDefinition) error {
 	if pd.Spec.Role == v1.RoleKRC || pd.Spec.Role == v1.RoleSRC {
 		if len(pd.Spec.Readiness) == 0 {
 			return fmt.Errorf("spec.readiness[] is required for role %q", pd.Spec.Role)
 		}
-		for i, c := range pd.Spec.Readiness {
-			if c.Kind == "" || c.Name == "" || c.Condition == "" {
-				return fmt.Errorf("spec.readiness[%d]: kind, name, and condition are all required", i)
-			}
+	}
+	for i, c := range pd.Spec.Readiness {
+		if c.Kind == "" || c.Name == "" || c.Condition == "" {
+			return fmt.Errorf("spec.readiness[%d]: kind, name, and condition are all required", i)
+		}
+	}
+	return nil
+}
+
+// validateImplements is a shape-only check. Interface names are an open
+// extension point: new interfaces can be coined by convention (e.g.
+// "http-proxy", "kv-secret-store", "git-server") without gitups core
+// code changes. The community agrees on shapes out-of-band; gitups core
+// only enforces that every entry is non-empty.
+func validateImplements(pd *v1.PackageDefinition) error {
+	for i, ref := range pd.Spec.Implements {
+		if ref.Interface == "" || ref.Version == "" {
+			return fmt.Errorf("spec.implements[%d]: interface and version are required", i)
+		}
+	}
+	return nil
+}
+
+// validateBundles enforces that only SRC packages may carry bundles and
+// that each bundle entry names its interface + non-empty source. Like
+// validateImplements, the interface name is an open extension point.
+func validateBundles(pd *v1.PackageDefinition) error {
+	if len(pd.Spec.Bundles) > 0 && pd.Spec.Role != v1.RoleSRC {
+		return fmt.Errorf("spec.bundles is only valid for role %q", v1.RoleSRC)
+	}
+	for i, ref := range pd.Spec.Bundles {
+		if ref.Interface == "" || ref.Version == "" {
+			return fmt.Errorf("spec.bundles[%d]: interface and version are required", i)
+		}
+		if ref.Source == "" {
+			return fmt.Errorf("spec.bundles[%d]: source is required", i)
 		}
 	}
 	return nil

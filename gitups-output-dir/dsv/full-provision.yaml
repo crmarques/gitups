@@ -374,6 +374,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -400,6 +401,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -426,6 +428,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -452,6 +455,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -478,6 +482,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -503,31 +508,31 @@ spec:
   repositories:
   - description: Cluster-wide infra installed up-front.
     name: basic-infra
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - description: Env-specific infra config.
     name: basic-infra-dsv
     repoRef:
       commit: v0.0.1
       name: basic-infra
-    type: k8s-gitops-env
+    type: kubernetes-resources
   - description: Shared support service installs.
     name: support-services
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - description: Env-specific support service configuration.
     name: support-services-dsv
     repoRef:
       commit: v0.0.1
       name: support-services
-    type: k8s-gitops-env
+    type: kubernetes-resources
   - description: Cluster-wide GitOps controller configuration.
     name: gitops-controllers
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - description: Env-specific GitOps controller configuration.
     name: gitops-controllers-dsv
     repoRef:
       commit: v0.0.1
       name: gitops-controllers
-    type: k8s-gitops-env
+    type: kubernetes-resources
   repository:
     layout: split
     outputPath: ./out/dsv

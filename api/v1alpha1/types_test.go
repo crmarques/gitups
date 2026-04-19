@@ -21,7 +21,7 @@ func TestProvisionRoundTrip(t *testing.T) {
 			Repositories: []v1.RepositoryDecl{
 				{
 					Name: "base",
-					Type: "k8s-gitops-generic",
+					Type: "kubernetes-resources",
 					Packages: []v1.PackageRef{
 						{Template: "local/argocd"},
 						{Template: "local/metallb", InstallMethod: "helm"},
@@ -29,7 +29,7 @@ func TestProvisionRoundTrip(t *testing.T) {
 				},
 				{
 					Name: "base-{{.Env}}",
-					Type: "k8s-gitops-env",
+					Type: "kubernetes-resources",
 					RepoRef: &v1.RepositoryRef{
 						Name:   "base",
 						Commit: "v0.0.1",
@@ -81,7 +81,7 @@ func TestFullProvisionRoundTrip(t *testing.T) {
 					InstallMethod:   "olm",
 					Repository:      "base",
 					Instance:        "argocd",
-					Role:            "controller",
+					Role:            v1.RoleKRC,
 					Renderer:        "olm",
 					ResolvedValues: map[string]any{
 						"namespace": "argocd",

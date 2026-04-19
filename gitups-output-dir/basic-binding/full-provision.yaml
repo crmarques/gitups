@@ -169,6 +169,25 @@ spec:
     role: kubernetes-resource-controller
     template: local/argocd
     unitType: install
+  - applyWave: 0
+    domain: install
+    installMethod: raw
+    instance: declarest
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/install/raw
+      repo: gitops-controllers
+    renderer: raw
+    repository: gitops-controllers
+    resolvedValues:
+      image:
+        repository: ghcr.io/crmarques/declarest
+        tag: v0.3.8
+      namespace: declarest-system
+      replicas: 1
+    role: service-resource-controller
+    template: local/declarest
+    unitType: install
   - applyWave: 1
     dependsOn:
     - argocd/install
@@ -219,6 +238,11 @@ spec:
       capability: git-provider
       name: argocd-gitea-bot
       side: provider
+    controller:
+      instance: declarest
+      intent: managed-script
+      kind: service-resource-controller
+      template: local/declarest
     dependsOn:
     - gitea/install
     domain: resources
@@ -244,6 +268,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -270,6 +295,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -296,6 +322,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -322,6 +349,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -348,6 +376,7 @@ spec:
       instance: argocd
       intent: managed-repo
       kind: kubernetes-resource-controller
+      template: local/argocd
     dependsOn:
     - argocd/resources/instance
     domain: kubernetes-resource-controller
@@ -372,23 +401,23 @@ spec:
   placeholders: null
   repositories:
   - name: basic-infra
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - name: basic-infra-dev
     repoRef:
       name: basic-infra
-    type: k8s-gitops-env
+    type: kubernetes-resources
   - name: support-services
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - name: support-services-dev
     repoRef:
       name: support-services
-    type: k8s-gitops-env
+    type: kubernetes-resources
   - name: gitops-controllers
-    type: k8s-gitops-generic
+    type: kubernetes-resources
   - name: gitops-controllers-dev
     repoRef:
       name: gitops-controllers
-    type: k8s-gitops-env
+    type: kubernetes-resources
   repository:
     layout: split
     outputPath: ./out/basic-binding

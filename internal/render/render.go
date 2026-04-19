@@ -21,6 +21,70 @@ import (
 	"github.com/crmarques/gitups/internal/placeholders"
 )
 
+// managedScriptTemplateValues builds the template context the SRC's
+// managed-script overlay consumes. Inputs come from the original
+// authoring descriptor (scripts/ dir on disk, pinned scriptImage / SA)
+// and from the unit's ResolvedValues (namespace + the full original
+// value map serialised verbatim as valuesJSON so the script body reads
+// exactly what it did under the retired built-in wrapper). Called at
+// render time only; ResolvedValues is never mutated so placeholder
+// tracking stays per-field on the source unit.
+func managedScriptTemplateValues(rp *v1.ResolvedPackage, origUnit catalog.Unit) (map[string]any, error) {
+	namespace, _ := rp.ResolvedValues["namespace"].(string)
+	if namespace == "" {
+		return nil, fmt.Errorf("resolvedValues.namespace is required for managed-script resources")
+	}
+	scripts, err := readManagedScriptBodies(filepath.Join(origUnit.SourceDir, "scripts"))
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := scripts["provision.sh"]; !ok {
+		return nil, fmt.Errorf("scripts/provision.sh missing in %s", origUnit.SourceDir)
+	}
+	valuesJSON, err := json.MarshalIndent(rp.ResolvedValues, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal resolved values: %w", err)
+	}
+	sa := origUnit.Descriptor.ScriptServiceAccount
+	if sa == "" {
+		sa = "default"
+	}
+	return map[string]any{
+		"namespace":            namespace,
+		"scriptImage":          origUnit.Descriptor.ScriptImage,
+		"scriptServiceAccount": sa,
+		"scripts":              scripts,
+		"valuesJSON":           string(valuesJSON),
+	}, nil
+}
+
+// readManagedScriptBodies returns a deterministic filename→body map for
+// every *.sh file in dir. Subdirectories and non-shell files are
+// ignored.
+func readManagedScriptBodies(dir string) (map[string]any, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	out := map[string]any{}
+	for _, n := range names {
+		body, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", n, err)
+		}
+		out[n] = string(body)
+	}
+	return out, nil
+}
+
 // Options controls Render behavior.
 type Options struct {
 	OutputPath        string
@@ -98,7 +162,7 @@ func Render(ctx context.Context, fp *v1.FullProvision, cat *catalog.Catalog, opt
 		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 			return fmt.Errorf("package %s: mkdir %s: %w", rp.Instance, pkgDir, err)
 		}
-		if err := renderPackage(ctx, rp, entry, pkgDir, fp, opts); err != nil {
+		if err := renderPackage(ctx, rp, entry, cat, pkgDir, fp, opts); err != nil {
 			return fmt.Errorf("package %s: %w", rp.Instance, err)
 		}
 		byRepo[rp.RenderedPaths.Repo] = append(byRepo[rp.RenderedPaths.Repo], rp)
@@ -241,20 +305,62 @@ func failOnPlaceholders(fp *v1.FullProvision) error {
 }
 
 type renderUnit struct {
-	SourceDir            string
-	Renderer             string
-	OLM                  *v1.OLMSpec
-	Helm                 *v1.HelmSpec
-	Kustomize            *v1.KustomizeSpec
-	Hooks                *v1.HookSpec
-	Overlays             []string
-	Readiness            []v1.ReadinessCheck
-	ProvisioningStyle    string
-	ScriptImage          string
-	ScriptServiceAccount string
+	SourceDir string
+	Renderer  string
+	OLM       *v1.OLMSpec
+	Helm      *v1.HelmSpec
+	Kustomize *v1.KustomizeSpec
+	Hooks     *v1.HookSpec
+	Overlays  []string
+	Readiness []v1.ReadinessCheck
 }
 
-func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, error) {
+// controllerDomainFor maps a controller Role to its owning package
+// directory domain. Every controller kind implements its intents under
+// exactly one domain so the mapping is a small lookup.
+func controllerDomainFor(kind v1.Role) string {
+	switch kind {
+	case v1.RoleKRC:
+		return v1.DomainKRC
+	case v1.RoleSRC:
+		return v1.DomainSRC
+	}
+	return ""
+}
+
+func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry, cat *catalog.Catalog) (renderUnit, error) {
+	// Controller-routed units: the unit's render shape (templates +
+	// renderer) is owned by the controller package's intent
+	// implementation, but the readiness checks stay on the original
+	// authoring descriptor — they describe the workload object the
+	// cluster must wait for, not the controller itself (the controller's
+	// own readiness is checked during apply-phase handoff).
+	if rp.Controller != nil && rp.Controller.Intent != "" {
+		ctrlEntry, ok := cat.Lookup(rp.Controller.Template)
+		if !ok {
+			return renderUnit{}, fmt.Errorf("controller package %q not in catalog", rp.Controller.Template)
+		}
+		domain := controllerDomainFor(rp.Controller.Kind)
+		u, ok := ctrlEntry.LookupDomainUnit(domain, rp.Controller.Intent)
+		if !ok {
+			return renderUnit{}, fmt.Errorf("%s package %q does not implement intent %q",
+				domain, ctrlEntry.Def.Metadata.Name, rp.Controller.Intent)
+		}
+		readiness := append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...)
+		if orig, ok := entry.LookupDomainUnit(rp.Domain, rp.ResourceTemplate); ok && len(orig.Descriptor.Readiness) > 0 {
+			readiness = append([]v1.ReadinessCheck(nil), orig.Descriptor.Readiness...)
+		}
+		return renderUnit{
+			SourceDir: u.SourceDir,
+			Renderer:  u.Descriptor.Renderer,
+			OLM:       u.Descriptor.OLM,
+			Helm:      u.Descriptor.Helm,
+			Kustomize: u.Descriptor.Kustomize,
+			Hooks:     u.Descriptor.Hooks,
+			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+			Readiness: readiness,
+		}, nil
+	}
 	switch rp.UnitType {
 	case v1.UnitTypeInstall:
 		u, ok := entry.LookupDomainUnit(v1.DomainInstall, rp.InstallMethod)
@@ -281,17 +387,14 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, err
 			return renderUnit{}, fmt.Errorf("domain %q sub-unit %q not declared by package %q", domain, rp.ResourceTemplate, entry.Def.Metadata.Name)
 		}
 		return renderUnit{
-			SourceDir:            u.SourceDir,
-			Renderer:             u.Descriptor.Renderer,
-			OLM:                  u.Descriptor.OLM,
-			Helm:                 u.Descriptor.Helm,
-			Kustomize:            u.Descriptor.Kustomize,
-			Hooks:                u.Descriptor.Hooks,
-			Overlays:             append([]string(nil), u.Descriptor.Overlays...),
-			Readiness:            append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...),
-			ProvisioningStyle:    u.Descriptor.ProvisioningStyle,
-			ScriptImage:          u.Descriptor.ScriptImage,
-			ScriptServiceAccount: u.Descriptor.ScriptServiceAccount,
+			SourceDir: u.SourceDir,
+			Renderer:  u.Descriptor.Renderer,
+			OLM:       u.Descriptor.OLM,
+			Helm:      u.Descriptor.Helm,
+			Kustomize: u.Descriptor.Kustomize,
+			Hooks:     u.Descriptor.Hooks,
+			Overlays:  append([]string(nil), u.Descriptor.Overlays...),
+			Readiness: append([]v1.ReadinessCheck(nil), u.Descriptor.Readiness...),
 		}, nil
 	default:
 		return renderUnit{}, fmt.Errorf("unknown unitType %q", rp.UnitType)
@@ -299,13 +402,25 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry) (renderUnit, err
 }
 
 // renderPackage dispatches on renderer type, runs hooks, and writes overlays.
-func renderPackage(ctx context.Context, rp *v1.ResolvedPackage, entry catalog.Entry, pkgDir string, fp *v1.FullProvision, opts Options) error {
-	unit, err := renderUnitFor(rp, entry)
+func renderPackage(ctx context.Context, rp *v1.ResolvedPackage, entry catalog.Entry, cat *catalog.Catalog, pkgDir string, fp *v1.FullProvision, opts Options) error {
+	unit, err := renderUnitFor(rp, entry, cat)
 	if err != nil {
 		return err
 	}
+	templateValues := rp.ResolvedValues
+	if rp.Controller != nil && rp.Controller.Intent == "managed-script" {
+		origUnit, ok := entry.LookupDomainUnit(rp.Domain, rp.ResourceTemplate)
+		if !ok {
+			return fmt.Errorf("managed-script rewire: original unit %q not found in package %q", rp.ResourceTemplate, entry.Def.Metadata.Name)
+		}
+		v, err := managedScriptTemplateValues(rp, origUnit)
+		if err != nil {
+			return err
+		}
+		templateValues = v
+	}
 	tctx := templateCtx{
-		Values:           rp.ResolvedValues,
+		Values:           templateValues,
 		Instance:         rp.Instance,
 		PackageInstance:  rp.PackageInstance,
 		UnitType:         rp.UnitType,
@@ -319,31 +434,25 @@ func renderPackage(ctx context.Context, rp *v1.ResolvedPackage, entry catalog.En
 		return err
 	}
 
-	if unit.ProvisioningStyle == v1.ProvisioningStyleScript {
-		if err := renderScript(rp, unit, pkgDir); err != nil {
+	switch unit.Renderer {
+	case "olm":
+		if err := renderOLM(ctx, rp, unit, pkgDir, tctx); err != nil {
 			return err
 		}
-	} else {
-		switch unit.Renderer {
-		case "olm":
-			if err := renderOLM(ctx, rp, unit, pkgDir, tctx); err != nil {
-				return err
-			}
-		case "helm":
-			if err := renderHelm(ctx, rp, unit, pkgDir, tctx, opts.Helm); err != nil {
-				return err
-			}
-		case "kustomize":
-			if err := renderKustomize(ctx, rp, unit, pkgDir, tctx, opts.Kustomize); err != nil {
-				return err
-			}
-		case "raw":
-			if err := renderRaw(ctx, rp, unit, pkgDir, tctx); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown renderer %q", unit.Renderer)
+	case "helm":
+		if err := renderHelm(ctx, rp, unit, pkgDir, tctx, opts.Helm); err != nil {
+			return err
 		}
+	case "kustomize":
+		if err := renderKustomize(ctx, rp, unit, pkgDir, tctx, opts.Kustomize); err != nil {
+			return err
+		}
+	case "raw":
+		if err := renderRaw(ctx, rp, unit, pkgDir, tctx); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown renderer %q", unit.Renderer)
 	}
 
 	if err := renderOverlays(unit, pkgDir, tctx); err != nil {

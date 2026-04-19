@@ -142,6 +142,19 @@ Packages declare structural capability contracts; the user wires them in
 (in the consumer's env repo) and one provider-side resource per env repo
 that references the provider's generic repo.
 
+Capability names (`git-provider`, `lb-ip-pool`, `http-upstream`, …) are
+an **open extension point**: new packages can coin new names by
+convention; gitups core only enforces shape (non-empty name, unique
+binding name, consistent provider/consumer wiring). No registry to
+update.
+
+Service-config interfaces declared via `spec.implements[]` (consumer
+side) and `spec.bundles[]` (SRC side) work the same way — interface
+names like `http-proxy/v1alpha1` are strings agreed on out-of-band
+between package authors and SRC authors. Gitups cross-references them
+at expand time so every `implements` entry has a matching bundle on the
+selected SRC.
+
 `package.yaml` — provider side:
 
 ```yaml

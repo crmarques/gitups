@@ -36,7 +36,7 @@ func resolveBindings(
 
 	envReposByRef := map[string][]v1.RepositoryDecl{}
 	for _, r := range p.Spec.Repositories {
-		if r.Type == "k8s-gitops-env" && r.RepoRef != nil {
+		if r.Type == v1.RepoTypeKubernetesResources && r.RepoRef != nil {
 			envReposByRef[r.RepoRef.Name] = append(envReposByRef[r.RepoRef.Name], r)
 		}
 	}
@@ -247,7 +247,7 @@ func lookupRequire(def *v1.PackageDefinition, capability string) *v1.CapabilityR
 // resolved instance name.
 func findProvider(p *v1.Provision, cat *catalog.Catalog, repoName, instance string) (catalog.Entry, string, string, error) {
 	for _, r := range p.Spec.Repositories {
-		if r.Type != "k8s-gitops-generic" || r.Name != repoName {
+		if r.Type != v1.RepoTypeKubernetesResources || r.RepoRef != nil || r.Name != repoName {
 			continue
 		}
 		for _, pr := range r.Packages {

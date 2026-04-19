@@ -328,11 +328,12 @@ func newApplyCmd() *cobra.Command {
 		dryRun            bool
 		allowPlaceholders bool
 		waitCRDs          bool
+		full              bool
 		waitTimeout       time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "apply <name> --to <kubectl-context>",
-		Short: "kubectl apply -k each rendered repo dir in dependency order",
+		Short: "Bootstrap the target cluster: kubectl + SRC CLI for the bootstrap subset, then hand off to the in-cluster KRC/SRC",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toContext == "" {
@@ -362,75 +363,27 @@ func newApplyCmd() *cobra.Command {
 				return fmt.Errorf("required binary %q not found in PATH", "kubectl")
 			}
 
-			// Order repos by the first appearance of a resolved unit in each
-			// repo. Empty repos never appear in fp.Spec.Packages, so they
-			// cannot be applied.
-			seen := map[string]bool{}
-			var repoOrder []string
-			for i := range fp.Spec.Packages {
-				repo := fp.Spec.Packages[i].RenderedPaths.Repo
-				if !seen[repo] {
-					seen[repo] = true
-					repoOrder = append(repoOrder, repo)
-				}
-			}
-
 			out := cmd.ErrOrStderr()
-			fmt.Fprintf(out, "gitups: applying %d repo(s) to context %q (dry-run=%v)\n",
-				len(repoOrder), toContext, dryRun)
-			for _, repo := range repoOrder {
-				repoDir := filepath.Join(ws.Root, repo)
-				if _, err := os.Stat(repoDir); err != nil {
-					return fmt.Errorf("%s not rendered (run `gitups generate %s` first): %w", repo, ws.Name, err)
-				}
-				// Server-side apply sidesteps the 256KB last-applied annotation
-				// limit that OLM's CRDs blow through, and force-conflicts lets
-				// us re-take ownership of fields managed by a prior client-side
-				// apply. When both a CRD and its CRs live in the same repo
-				// (OLM bootstrap), the first pass establishes the CRDs and the
-				// second pass lands the CRs; we retry once on failure.
-				kargs := []string{"--context", toContext, "apply", "-k", repoDir, "--server-side", "--force-conflicts"}
-				if dryRun {
-					kargs = append(kargs, "--dry-run=server")
-				}
-				applyOnce := func(label string) error {
-					fmt.Fprintf(out, "gitups: kubectl %s [%s]\n", strings.Join(kargs, " "), label)
-					k := exec.CommandContext(cmd.Context(), "kubectl", kargs...)
-					k.Stdout = cmd.OutOrStdout()
-					k.Stderr = out
-					return k.Run()
-				}
-				if err := applyOnce("pass 1"); err != nil {
-					if dryRun {
-						return fmt.Errorf("kubectl apply -k %s: %w", repoDir, err)
-					}
-					fmt.Fprintf(out, "gitups: pass 1 reported errors; waiting for CRD establishment before retry\n")
-					if waitErr := waitForCRDsEstablished(cmd.Context(), toContext, out); waitErr != nil {
-						fmt.Fprintf(out, "gitups: CRD establishment wait did not complete cleanly: %v\n", waitErr)
-					}
-					if err2 := applyOnce("pass 2"); err2 != nil {
-						return fmt.Errorf("kubectl apply -k %s (both passes failed): %w", repoDir, err2)
-					}
-				}
-				// Optional: wait for operator CSVs installed by this repo
-				// to reach Succeeded before moving to the next repo. Lets
-				// later repos safely reference CRDs the operator installs.
-				if waitCRDs && !dryRun {
-					subs := cluster.SubscriptionsForRepo(fp.Spec.Packages, repo)
-					if len(subs) > 0 {
-						fmt.Fprintf(out, "gitups: waiting on %d subscription(s) from %s before next repo\n",
-							len(subs), repo)
-						if err := cluster.WaitForSubscriptions(cmd.Context(), toContext, subs, cluster.WaitOptions{
-							Timeout: waitTimeout,
-							Out:     out,
-						}); err != nil {
-							return fmt.Errorf("wait after %s: %w", repo, err)
-						}
-					}
+
+			// Decide flow: full-tree (today's behaviour) or bootstrap-only
+			// (hand off to the KRC/SRC once their own units are applied).
+			// --full wins; otherwise presence of a Provision-level
+			// controllers block triggers the bootstrap flow.
+			var prov *v1.Provision
+			provPath := filepath.Join(ws.Root, "provision.yaml")
+			if _, err := os.Stat(provPath); err == nil {
+				prov, err = load.Provision(provPath)
+				if err != nil {
+					return fmt.Errorf("load provision %s: %w", provPath, err)
 				}
 			}
-			fmt.Fprintf(out, "gitups: apply complete\n")
-			return nil
+			hasControllers := prov != nil && prov.Spec.Controllers != nil &&
+				(prov.Spec.Controllers.KubernetesResources != nil || prov.Spec.Controllers.ServiceResources != nil)
+
+			if full || !hasControllers {
+				return applyFullTree(cmd, fp, ws, toContext, dryRun, waitCRDs, waitTimeout, out)
+			}
+			return applyBootstrapOnly(cmd, fp, prov, ws, toContext, dryRun, waitCRDs, waitTimeout, out)
 		},
 	}
 	addOutputDirFlag(cmd, &outputDir)
@@ -438,9 +391,257 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "kubectl apply --dry-run=server; no cluster state changes")
 	cmd.Flags().BoolVar(&allowPlaceholders, "allow-placeholders", false, "apply even when placeholders remain in FullProvision")
 	cmd.Flags().BoolVar(&waitCRDs, "wait-crds", false, "after each repo, wait for its OLM subscriptions to Succeed before the next repo")
+	cmd.Flags().BoolVar(&full, "full", false, "apply the whole rendered tree via kubectl even when spec.controllers declares a KRC/SRC (for SRC-less setups or disaster recovery)")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "per-repo wait budget when --wait-crds is set")
 	cmd.SetContext(context.Background())
 	return cmd
+}
+
+// applyFullTree keeps the today's kubectl apply -k <repo> per repo
+// behaviour. Used when no controllers are declared and when --full is
+// passed. Dependency ordering is implicit in fp.Spec.Packages' topo
+// sort, so first-appearance per repo gives a safe apply order.
+func applyFullTree(cmd *cobra.Command, fp *v1.FullProvision, ws workspace, toContext string, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
+	seen := map[string]bool{}
+	var repoOrder []string
+	for i := range fp.Spec.Packages {
+		repo := fp.Spec.Packages[i].RenderedPaths.Repo
+		if !seen[repo] {
+			seen[repo] = true
+			repoOrder = append(repoOrder, repo)
+		}
+	}
+	fmt.Fprintf(out, "gitups: applying %d repo(s) to context %q (dry-run=%v, mode=full)\n",
+		len(repoOrder), toContext, dryRun)
+	for _, repo := range repoOrder {
+		repoDir := filepath.Join(ws.Root, repo)
+		if _, err := os.Stat(repoDir); err != nil {
+			return fmt.Errorf("%s not rendered (run `gitups generate %s` first): %w", repo, ws.Name, err)
+		}
+		if err := kubectlApplyKustomize(cmd, toContext, repoDir, dryRun, out); err != nil {
+			return err
+		}
+		if waitCRDs && !dryRun {
+			subs := cluster.SubscriptionsForRepo(fp.Spec.Packages, repo)
+			if len(subs) > 0 {
+				fmt.Fprintf(out, "gitups: waiting on %d subscription(s) from %s before next repo\n", len(subs), repo)
+				if err := cluster.WaitForSubscriptions(cmd.Context(), toContext, subs, cluster.WaitOptions{Timeout: waitTimeout, Out: out}); err != nil {
+					return fmt.Errorf("wait after %s: %w", repo, err)
+				}
+			}
+		}
+	}
+	fmt.Fprintf(out, "gitups: apply complete\n")
+	return nil
+}
+
+// applyBootstrapOnly applies only the bootstrap subset: every install,
+// every unit whose package role is KRC or SRC (their own instance /
+// config / repo-secret), and every unit with a Controller pointer
+// (KRC-synthesised managed-repo registrations + SRC-rewired
+// managed-script jobs). Everything else is left for the in-cluster KRC
+// to reconcile after the Applications it owns land in the cluster.
+//
+// Routing is per-unit, not per-repo, because the bootstrap subset
+// spans multiple repos and skips siblings within each one. kubectl
+// apply -k operates on each unit directory; SRC-owned units go through
+// the declared SRC CLI.
+func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provision, ws workspace, toContext string, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
+	cat, err := buildProvisionCatalog(prov, ws)
+	if err != nil {
+		return err
+	}
+
+	planned := bootstrapSubset(fp)
+	if len(planned) == 0 {
+		return fmt.Errorf("bootstrap subset is empty; nothing to apply")
+	}
+	sort.SliceStable(planned, func(i, j int) bool {
+		if planned[i].ApplyWave != planned[j].ApplyWave {
+			return planned[i].ApplyWave < planned[j].ApplyWave
+		}
+		return planned[i].Instance < planned[j].Instance
+	})
+
+	srcCLI, srcBinary, err := srcCLIForPlan(cat, prov, planned)
+	if err != nil {
+		return err
+	}
+	if srcBinary != "" {
+		if _, err := exec.LookPath(srcBinary); err != nil {
+			return fmt.Errorf("required SRC binary %q not found in PATH (declared in %s spec.cli)", srcBinary, srcCLI.ownerName)
+		}
+	}
+
+	fmt.Fprintf(out, "gitups: bootstrap-only mode; %d unit(s) to apply to context %q (dry-run=%v)\n",
+		len(planned), toContext, dryRun)
+
+	appliedRepos := map[string]bool{}
+	runner := cluster.DefaultCLIRunner{}
+	for _, rp := range planned {
+		unitDir := filepath.Join(ws.Root, rp.RenderedPaths.Repo, rp.RenderedPaths.Dir)
+		if _, err := os.Stat(unitDir); err != nil {
+			return fmt.Errorf("unit %s not rendered at %s (run `gitups generate %s` first): %w", rp.Instance, unitDir, ws.Name, err)
+		}
+		if rp.Controller != nil && rp.Controller.Kind == v1.RoleSRC {
+			if err := invokeSRCCli(cmd.Context(), runner, srcCLI.spec, unitDir, toContext, rp, out, dryRun); err != nil {
+				return err
+			}
+		} else {
+			if err := kubectlApplyKustomize(cmd, toContext, unitDir, dryRun, out); err != nil {
+				return err
+			}
+		}
+		appliedRepos[rp.RenderedPaths.Repo] = true
+		if waitCRDs && !dryRun && rp.Renderer == "olm" {
+			ns, _ := rp.ResolvedValues["namespace"].(string)
+			if ns != "" {
+				sub := []cluster.SubscriptionRef{{Namespace: ns, Name: rp.Instance}}
+				fmt.Fprintf(out, "gitups: waiting on subscription %s/%s\n", ns, rp.Instance)
+				if err := cluster.WaitForSubscriptions(cmd.Context(), toContext, sub, cluster.WaitOptions{Timeout: waitTimeout, Out: out}); err != nil {
+					return fmt.Errorf("wait after %s: %w", rp.Instance, err)
+				}
+			}
+		}
+	}
+	fmt.Fprintf(out, "gitups: bootstrap complete; handoff to in-cluster KRC/SRC.\n")
+	return nil
+}
+
+// writer narrows cobra's io.Writer to the subset we need. Eases testing.
+type writer interface{ Write([]byte) (int, error) }
+
+// kubectlApplyKustomize applies one kustomize dir with retry after CRD
+// establishment. Shape lifted from the pre-Phase-4 per-repo apply so
+// apply semantics remain identical for each bootstrap unit.
+func kubectlApplyKustomize(cmd *cobra.Command, toContext, dir string, dryRun bool, out writer) error {
+	kargs := []string{"--context", toContext, "apply", "-k", dir, "--server-side", "--force-conflicts"}
+	if dryRun {
+		kargs = append(kargs, "--dry-run=server")
+	}
+	run := func(label string) error {
+		fmt.Fprintf(out, "gitups: kubectl %s [%s]\n", strings.Join(kargs, " "), label)
+		k := exec.CommandContext(cmd.Context(), "kubectl", kargs...)
+		k.Stdout = cmd.OutOrStdout()
+		k.Stderr = out
+		return k.Run()
+	}
+	if err := run("pass 1"); err != nil {
+		if dryRun {
+			return fmt.Errorf("kubectl apply -k %s: %w", dir, err)
+		}
+		fmt.Fprintf(out, "gitups: pass 1 reported errors; waiting for CRD establishment before retry\n")
+		if waitErr := waitForCRDsEstablished(cmd.Context(), toContext, out); waitErr != nil {
+			fmt.Fprintf(out, "gitups: CRD establishment wait did not complete cleanly: %v\n", waitErr)
+		}
+		if err2 := run("pass 2"); err2 != nil {
+			return fmt.Errorf("kubectl apply -k %s (both passes failed): %w", dir, err2)
+		}
+	}
+	return nil
+}
+
+// invokeSRCCli renders ControllerCLI.Args from the fixed template
+// context and runs the SRC binary against unitDir. Namespace falls back
+// to the unit's resolved values; apply --dry-run passes the
+// `--dry-run=server` convention through by short-circuiting (we do not
+// assume every SRC CLI supports it).
+func invokeSRCCli(ctx context.Context, runner cluster.CLIRunner, spec *v1.ControllerCLI, unitDir, toContext string, rp *v1.ResolvedPackage, out writer, dryRun bool) error {
+	if dryRun {
+		fmt.Fprintf(out, "gitups: [dry-run] %s apply %s (skipped: SRC CLI has no uniform --dry-run contract)\n", spec.Binary, unitDir)
+		return nil
+	}
+	ns, _ := rp.ResolvedValues["namespace"].(string)
+	ctxFields := cluster.CLIContext{
+		KubeContext:  toContext,
+		ManifestPath: unitDir,
+		Namespace:    ns,
+	}
+	args, err := cluster.RenderCLIArgs(spec, ctxFields)
+	if err != nil {
+		return fmt.Errorf("unit %s: %w", rp.Instance, err)
+	}
+	fmt.Fprintf(out, "gitups: %s %s\n", spec.Binary, strings.Join(args, " "))
+	if err := runner.Run(ctx, spec.Binary, args, out, out); err != nil {
+		return fmt.Errorf("unit %s: %s %s: %w", rp.Instance, spec.Binary, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// bootstrapSubset picks every ResolvedPackage gitups apply must own
+// directly: installs, controller-owned (KRC/SRC-synthesised or rewired)
+// units, and the KRC/SRC packages' own resources.
+func bootstrapSubset(fp *v1.FullProvision) []*v1.ResolvedPackage {
+	var out []*v1.ResolvedPackage
+	for i := range fp.Spec.Packages {
+		rp := &fp.Spec.Packages[i]
+		switch {
+		case rp.UnitType == v1.UnitTypeInstall:
+			out = append(out, rp)
+		case rp.Controller != nil:
+			out = append(out, rp)
+		case rp.Role == v1.RoleKRC || rp.Role == v1.RoleSRC:
+			out = append(out, rp)
+		}
+	}
+	return out
+}
+
+// srcCLIBundle pairs a ControllerCLI spec with its owning package name
+// for diagnostic messages.
+type srcCLIBundle struct {
+	spec      *v1.ControllerCLI
+	ownerName string
+}
+
+// srcCLIForPlan returns the SRC's CLI spec if the plan contains any
+// SRC-owned unit. The spec comes from the SRC package's PackageDefinition.
+func srcCLIForPlan(cat *catalog.Catalog, prov *v1.Provision, plan []*v1.ResolvedPackage) (srcCLIBundle, string, error) {
+	hasSRCOwned := false
+	for _, rp := range plan {
+		if rp.Controller != nil && rp.Controller.Kind == v1.RoleSRC {
+			hasSRCOwned = true
+			break
+		}
+	}
+	if !hasSRCOwned {
+		return srcCLIBundle{}, "", nil
+	}
+	if prov.Spec.Controllers == nil || prov.Spec.Controllers.ServiceResources == nil {
+		return srcCLIBundle{}, "", fmt.Errorf("SRC-owned units present but spec.controllers.serviceResources is missing")
+	}
+	a := prov.Spec.Controllers.ServiceResources
+	for _, r := range prov.Spec.Repositories {
+		if r.Type != v1.RepoTypeKubernetesResources || r.RepoRef != nil || r.Name != a.Repo {
+			continue
+		}
+		for _, pr := range r.Packages {
+			entry, ok := cat.Lookup(pr.Template)
+			if !ok {
+				continue
+			}
+			instance := pr.Instance
+			if instance == "" {
+				parts := strings.Split(pr.Template, "/")
+				instance = parts[len(parts)-1]
+			}
+			if instance != a.Instance {
+				continue
+			}
+			if entry.Def.Spec.CLI == nil || entry.Def.Spec.CLI.Binary == "" {
+				return srcCLIBundle{}, "", fmt.Errorf("SRC package %q has no spec.cli declared", entry.Def.Metadata.Name)
+			}
+			return srcCLIBundle{spec: entry.Def.Spec.CLI, ownerName: entry.Def.Metadata.Name}, entry.Def.Spec.CLI.Binary, nil
+		}
+	}
+	return srcCLIBundle{}, "", fmt.Errorf("SRC instance %q not found in repo %q", a.Instance, a.Repo)
+}
+
+// buildProvisionCatalog resolves the catalog for the given provision
+// relative to the workspace root. Mirrors the same interpretation of
+// relative source paths used by `gitups expand`.
+func buildProvisionCatalog(prov *v1.Provision, ws workspace) (*catalog.Catalog, error) {
+	return catalog.Build(prov.Spec.Sources, ws.Root)
 }
 
 func waitForCRDsEstablished(ctx context.Context, kubectlContext string, out interface{ Write([]byte) (int, error) }) error {
@@ -707,13 +908,13 @@ spec:
   # Repositories select package installs and environment resources.
   repositories: []
   # - name: platform
-  #   type: k8s-gitops-generic
+  #   type: kubernetes-resources
   #   packages:
   #     - template: local/olm
   #     - template: local/metallb
   #       installMethod: helm
   # - name: platform-{{.Env}}
-  #   type: k8s-gitops-env
+  #   type: kubernetes-resources
   #   repoRef:
   #     name: platform
   #     commit: v0.0.1

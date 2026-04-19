@@ -136,9 +136,12 @@ type ref struct {
 }
 
 func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, []v1.ResolvedRepository, error) {
+	// Generic-style kubernetes-resources repos are those with no
+	// repoRef. Indexed by name so env repos can derive a default
+	// package list when the user leaves packages[] empty.
 	genericByName := map[string]v1.RepositoryDecl{}
 	for _, repo := range p.Spec.Repositories {
-		if repo.Type == "k8s-gitops-generic" {
+		if repo.Type == v1.RepoTypeKubernetesResources && repo.RepoRef == nil {
 			genericByName[repo.Name] = repo
 		}
 	}
@@ -153,21 +156,28 @@ func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, [
 			Description: repo.Description,
 			Type:        repo.Type,
 			RepoRef:     cloneRepoRef(repo.RepoRef),
+			ServiceRef:  cloneServiceRef(repo.ServiceRef),
 		})
 		switch repo.Type {
-		case "k8s-gitops-generic":
-			for pi, pr := range repo.Packages {
-				r, err := installRef(repoName, pr, cat)
-				if err != nil {
-					return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: %w", ri, pi, err)
+		case v1.RepoTypeKubernetesResources:
+			if repo.RepoRef == nil {
+				// Generic: collects install refs from packages[].
+				for pi, pr := range repo.Packages {
+					r, err := installRef(repoName, pr, cat)
+					if err != nil {
+						return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: %w", ri, pi, err)
+					}
+					if seenInstance[r.instance] {
+						return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
+					}
+					seenInstance[r.instance] = true
+					out = append(out, r)
 				}
-				if seenInstance[r.instance] {
-					return nil, nil, fmt.Errorf("spec.repositories[%d].packages[%d]: duplicate instance %q", ri, pi, r.instance)
-				}
-				seenInstance[r.instance] = true
-				out = append(out, r)
+				continue
 			}
-		case "k8s-gitops-env":
+			// Env: collects resource refs. Inherits packages[] from
+			// the referenced generic repo when the env repo leaves
+			// packages[] empty.
 			packages := repo.Packages
 			if len(packages) == 0 {
 				base, ok := genericByName[repo.RepoRef.Name]
@@ -189,9 +199,23 @@ func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, [
 					out = append(out, r)
 				}
 			}
+		case v1.RepoTypeServiceResources:
+			// Service-resources repos are pure synthesis targets for
+			// Phase 5C's binding projection; they produce no units on
+			// their own. ResolvedRepository metadata is carried so
+			// render knows the repo exists.
+			continue
 		}
 	}
 	return out, resolvedRepos, nil
+}
+
+func cloneServiceRef(in *v1.ServiceRef) *v1.ServiceRef {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func installRef(repoName string, pr v1.PackageRef, cat *catalog.Catalog) (ref, error) {

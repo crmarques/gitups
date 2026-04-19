@@ -194,14 +194,14 @@ func TestExpandRepeatedExplicitResources(t *testing.T) {
 	prov.Spec.Repositories = []v1.RepositoryDecl{
 		{
 			Name: "base",
-			Type: "k8s-gitops-generic",
+			Type: "kubernetes-resources",
 			Packages: []v1.PackageRef{
 				{Template: "local/metallb", InstallMethod: "helm"},
 			},
 		},
 		{
 			Name: "base-dsv",
-			Type: "k8s-gitops-env",
+			Type: "kubernetes-resources",
 			RepoRef: &v1.RepositoryRef{
 				Name:   "base",
 				Commit: "v0.0.1",
@@ -251,7 +251,7 @@ func TestExpandRejectsUnknownTemplate(t *testing.T) {
 	prov.Spec.Repositories = []v1.RepositoryDecl{
 		{
 			Name: "base",
-			Type: "k8s-gitops-generic",
+			Type: "kubernetes-resources",
 			Packages: []v1.PackageRef{
 				{Template: "local/no-such-pkg"},
 			},

@@ -1,52 +1,49 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  labels:
-    app.kubernetes.io/component: script-provisioner
-    app.kubernetes.io/instance: gitea-user-argocd-gitea-bot-support-services-dev
-    app.kubernetes.io/managed-by: gitups
   name: gitea-user-argocd-gitea-bot-support-services-dev-provision
   namespace: gitea
+  labels:
+    app.kubernetes.io/managed-by: gitups
+    app.kubernetes.io/component: script-provisioner
+    app.kubernetes.io/instance: gitea-user-argocd-gitea-bot-support-services-dev
 spec:
   backoffLimit: 4
   template:
     metadata:
       labels:
+        app.kubernetes.io/managed-by: gitups
         app.kubernetes.io/component: script-provisioner
         app.kubernetes.io/instance: gitea-user-argocd-gitea-bot-support-services-dev
-        app.kubernetes.io/managed-by: gitups
     spec:
-      containers:
-      - args:
-        - set -eu && cp /opt/gitups/scripts/provision.sh /tmp/provision.sh && chmod
-          +x /tmp/provision.sh && /tmp/provision.sh
-        command:
-        - /bin/sh
-        - -c
-        env:
-        - name: GITUPS_VALUES_FILE
-          value: /etc/gitups/values.json
-        - name: GITUPS_INSTANCE
-          value: gitea-user-argocd-gitea-bot-support-services-dev
-        - name: GITUPS_NAMESPACE
-          value: gitea
-        image: alpine:3.20.3
-        imagePullPolicy: IfNotPresent
-        name: provision
-        volumeMounts:
-        - mountPath: /opt/gitups/scripts
-          name: scripts
-          readOnly: true
-        - mountPath: /etc/gitups
-          name: values
-          readOnly: true
       restartPolicy: OnFailure
       serviceAccountName: default
+      containers:
+        - name: provision
+          image: alpine:3.20.3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - "set -eu && cp /opt/gitups/scripts/provision.sh /tmp/provision.sh && chmod +x /tmp/provision.sh && /tmp/provision.sh"
+          env:
+            - name: GITUPS_VALUES_FILE
+              value: /etc/gitups/values.json
+            - name: GITUPS_INSTANCE
+              value: gitea-user-argocd-gitea-bot-support-services-dev
+            - name: GITUPS_NAMESPACE
+              value: gitea
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/gitups/scripts
+              readOnly: true
+            - name: values
+              mountPath: /etc/gitups
+              readOnly: true
       volumes:
-      - configMap:
-          defaultMode: 365
-          name: gitea-user-argocd-gitea-bot-support-services-dev-scripts
-        name: scripts
-      - configMap:
-          name: gitea-user-argocd-gitea-bot-support-services-dev-values
-        name: values
+        - name: scripts
+          configMap:
+            name: gitea-user-argocd-gitea-bot-support-services-dev-scripts
+            defaultMode: 365
+        - name: values
+          configMap:
+            name: gitea-user-argocd-gitea-bot-support-services-dev-values

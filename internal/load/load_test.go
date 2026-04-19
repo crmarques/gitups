@@ -94,7 +94,7 @@ spec:
       path: ./pkgs
   repositories:
     - name: base
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages:
         - template: local/metallb
         - template: local/argocd
@@ -110,7 +110,7 @@ spec:
     ref: v1.4.0
   repositories:
     - name: base-{{.Env}}
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef:
         name: base
         commit: v0.0.1
@@ -154,7 +154,7 @@ spec:
   sources: [{name: local, type: filesystem, path: ./pkgs}]
   repositories:
     - name: base
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages: [{template: local/x}]
 `)
 	writeFile(t, dir, "b/provision.yaml", `apiVersion: gitups/v1alpha1
@@ -164,7 +164,7 @@ spec:
   extends: {source: ../a/provision.yaml}
   repositories:
     - name: env
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef: {name: base}
 `)
 	writeFile(t, dir, "c/provision.yaml", `apiVersion: gitups/v1alpha1
@@ -174,7 +174,7 @@ spec:
   extends: {source: ../b/provision.yaml}
   repositories:
     - name: env2
-      type: k8s-gitops-env
+      type: kubernetes-resources
       repoRef: {name: base}
 `)
 	_, _, err := load.ProvisionResolved(filepath.Join(dir, "c/provision.yaml"))
@@ -220,7 +220,7 @@ spec:
   sources: [{name: local, type: filesystem, path: ./pkgs}]
   repositories:
     - name: base
-      type: k8s-gitops-generic
+      type: kubernetes-resources
       packages: [{template: local/x}]
 `)
 	writeFile(t, dir, "env/provision.yaml", `apiVersion: gitups/v1alpha1

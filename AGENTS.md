@@ -5,10 +5,19 @@ coding agents; task scope still comes from the user's current request.
 
 ## 1. What Gitups Is
 
-Gitups is a Go CLI that turns declarative user intent into git-shaped
-directories, one per logical repo, so a cluster can bootstrap GitOps from them.
-It is scoped to generation and bootstrap apply. It is not a controller and does
-not replace Argo CD, Flux, Declarest, Helm, Kustomize, or OLM.
+Gitups is a Go CLI that turns a declarative user intent into a *composition*
+of packages — the git-shaped directories they live in, the installs they
+perform, and the wiring between them. One YAML (`Provision`) names the
+repos, which packages land where, and how packages depend on or configure
+one another. Gitups expands that intent into `FullProvision`, renders one
+directory tree per logical repo, and can bootstrap a target cluster from
+those rendered trees (kubectl for K8s manifests, SRC CLI for
+service-level configuration). Pushing the rendered trees to a git
+provider is a user-driven step that sits outside gitups.
+
+It is scoped to generation and bootstrap apply. It is not a controller
+and does not replace Argo CD, Flux, Declarest, Helm, Kustomize, or OLM —
+it orchestrates them.
 
 ## 2. Non-Negotiable Invariants
 
@@ -51,6 +60,23 @@ not replace Argo CD, Flux, Declarest, Helm, Kustomize, or OLM.
   assigns the KRC/SRC roles to already-selected package instances via
   `{repo, instance}` — same reference shape as `bindings[].provider`.
   Full design in [agents/plans/krc-src-first-class-controllers.md](agents/plans/krc-src-first-class-controllers.md).
+- **Prefer KRC over SRC.** When a package's desired state can be
+  expressed as K8s CRDs/CRs, route it through the KRC: kubectl +
+  GitOps-controller reconciliation is the simpler, more auditable path
+  and keeps gitups output pure K8s YAML. Reach for SRC only when the
+  target has no stable CR (service-level admin APIs, external SaaS,
+  configuration that needs a controller-specific bundle). Same spirit
+  as the renderer priority above.
+- **Capabilities and interfaces are open extension points.** Packages
+  declare `provides[]` / `requires[]` (capability bindings) and
+  `implements[]` / `bundles[]` (service-config interfaces) using
+  free-form name strings. Gitups core enforces *shape* (non-empty
+  fields, unique names, consistent provider/consumer wiring) but does
+  not hold a closed list of names — new capabilities and interfaces
+  can be coined by convention as new packages ship, without touching
+  gitups core code. Bundles in SRC packages cross-reference interface
+  names so every `implements` in a package has a matching `bundles`
+  entry on the selected SRC at apply time.
 - **Hook ABI is stable.** Call hooks as
   `<script> --phase <phase> --values <json-path> --out <render-dir>`. Hooks
   may write only inside `--out`.
