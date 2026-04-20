@@ -194,6 +194,59 @@ or into `FullProvision`. The vault package's `secret-store` resource
 template exposes the vault address and token secret ref; real
 credentials live in Kubernetes Secrets referenced from `SecretStore`.
 
+## Bootstrap-sync via the declarest CLI
+
+Waiting for the declarest operator to become Ready on a cold cluster
+adds latency to the first reconcile and couples gitups apply to the
+operator's readiness probe. To keep bootstrap fast and operator-
+independent, the declarest package declares a **bootstrap-sync
+intent** under `spec.cli.intents`:
+
+```yaml
+spec:
+  role: service-resource-controller
+  cli:
+    binary: declarest
+    # Default CLI-only invocation (managed-script intent etc.).
+    args:
+      - apply
+      - --context={{.KubeContext}}
+      - --file={{.ManifestPath}}
+    # Per-intent bootstrap-sync invocations. Matched by resource
+    # template name at resolve time.
+    intents:
+      sync-policy:
+        args:
+          - resource
+          - apply
+          - --kube-context={{.KubeContext}}
+          - --sync-policy={{.ManifestPath}}/sync-policy.yaml
+```
+
+At resolve time,
+[controllers.go](../../internal/resolve/controllers.go)
+(`rewireSRCIntents`) walks every resource unit. When the unit's
+`resourceTemplate` matches a key in the selected SRC's
+`spec.cli.intents`, gitups tags the unit with
+`Controller: {Kind: service-resource-controller, Intent: <name>}`.
+
+At apply time, for every unit with an intent present in `Intents`:
+
+1. `kubectl apply -k <unitDir>` — the rendered CR lands in the
+   cluster so the operator can assume control on its own cadence.
+2. Then `declarest <args>` — the binary runs one immediate
+   reconciliation using the rendered CR as input.
+
+The CLI invocation is expected to resolve any referenced CRs
+(`resourceRepositoryRef`, `managedServiceRef`, `secretStoreRef` on a
+`SyncPolicy`) from the live cluster; by step 2 they are already
+applied because gitups applies earlier `applyWave` units before the
+SyncPolicy.
+
+CLI-only intents (today: `managed-script`) still live in
+`spec.cli.args` and do not appear under `Intents` — gitups skips
+kubectl apply and relies on the SRC CLI to apply its manifest.
+
 ## What gitups does NOT do
 
 - **Does not define per-integration CRDs.** Retired: the old

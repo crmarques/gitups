@@ -89,6 +89,16 @@ Kustomize, or OLM — it orchestrates them.
   The retired `spec.implements[]` / `spec.bundles[]` /
   `Provision.spec.repositories[].interfaceResources[]` machinery and
   the `service-resources` repo type are gone.
+- **Bootstrap-sync SRC intents.** An SRC may declare
+  `spec.cli.intents[<resourceTemplate>].args` in `package.yaml`.
+  Resource units whose `resourceTemplate` matches a key are tagged
+  at resolve time as SRC-owned with that intent; at apply time
+  gitups runs `kubectl apply` first (so the operator can later
+  assume control) and then invokes the SRC CLI with the intent's
+  args to drive one immediate reconciliation. The older CLI-only
+  invocation (`spec.cli.args`) is still used for the
+  `managed-script` intent. Declarest ships a `sync-policy` intent
+  by default.
 - **Hook ABI is stable.** Call hooks as
   `<script> --phase <phase> --values <json-path> --out <render-dir>`. Hooks
   may write only inside `--out`.

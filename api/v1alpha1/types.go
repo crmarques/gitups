@@ -416,9 +416,30 @@ type DeclarestBundle struct {
 // ControllerCLI describes how gitups invokes a controller's CLI during the
 // bootstrap phase of gitups apply. Tokens in Args are rendered from a fixed
 // template context: {{.KubeContext}}, {{.ManifestPath}}, {{.Namespace}}.
+//
+// Two invocation modes exist:
+//
+//   - CLI-only intents (e.g. `managed-script`): the SRC's CLI is the only
+//     thing that touches the cluster for this unit. Gitups skips kubectl
+//     apply entirely and runs the binary with `Args`.
+//   - Bootstrap-sync intents (declared in `Intents`): gitups first kubectl
+//     applies the rendered CR so an operator can later take over, then
+//     invokes the binary with the per-intent `Args` so an immediate,
+//     operator-independent bootstrap reconciliation runs on first install.
 type ControllerCLI struct {
 	Binary string   `json:"binary"`
 	Args   []string `json:"args,omitempty"`
+	// Intents maps a resource-template name to a per-intent CLI
+	// invocation. A resource unit whose template name matches a key
+	// here is tagged at resolve time as SRC-owned with that intent
+	// and follows the bootstrap-sync flow at apply time.
+	Intents map[string]ControllerCLIIntent `json:"intents,omitempty"`
+}
+
+// ControllerCLIIntent overrides the default CLI args for one named
+// intent. Rendered against the same CLIContext as ControllerCLI.Args.
+type ControllerCLIIntent struct {
+	Args []string `json:"args"`
 }
 
 // CapabilityProvide declares one capability offered by a provider package.

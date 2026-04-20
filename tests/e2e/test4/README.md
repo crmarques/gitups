@@ -119,6 +119,23 @@ cat "$OUT/test4/support-services-dev/packages/vault/resources/secret-store/vault
 (OLM itself, metallb-operator, keycloak-operator, argocd-operator,
 declarest-operator).
 
+### Bootstrap-sync via declarest CLI
+
+For the `SyncPolicy` unit, gitups follows the bootstrap-sync flow
+declared by the declarest package's `spec.cli.intents.sync-policy`:
+
+1. `kubectl apply -k …/sync-policy/keycloak-master-realm/` — the SP
+   CR lands in the cluster so the operator can take over at steady
+   state.
+2. `declarest resource apply --kube-context=kind-test4 --sync-policy=<rendered-sp.yaml>` —
+   the CLI immediately reconciles `/realms/master` using the co-
+   resident `ResourceRepository`, `ManagedService`, and `SecretStore`
+   CRs (already applied in earlier apply-waves).
+
+This makes bootstrap independent of the operator's readiness. The
+binary needs to be on `$PATH` (see
+[declarest/README](https://github.com/crmarques/declarest#install)).
+
 ## 5. Provision the tokens declarest's CRs reference
 
 The rendered `SecretStore` references `vault-root-token` in

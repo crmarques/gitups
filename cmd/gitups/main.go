@@ -721,8 +721,24 @@ func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provi
 			return fmt.Errorf("unit %s not rendered at %s (run `gitups generate %s` first): %w", rp.Instance, unitDir, ws.Name, err)
 		}
 		if rp.Controller != nil && rp.Controller.Kind == v1.RoleSRC {
-			if err := invokeSRCCli(cmd.Context(), runner, srcCLI.spec, unitDir, toContext, rp, out, dryRun); err != nil {
-				return err
+			intent := rp.Controller.Intent
+			if intentSpec, ok := srcCLI.spec.Intents[intent]; ok {
+				// Bootstrap-sync intent: apply the rendered CR via
+				// kubectl so the in-cluster operator can take over
+				// later, then invoke the SRC's CLI for one immediate
+				// reconciliation using the rendered resource as input.
+				if err := kubectlApplyKustomize(cmd, toContext, unitDir, dryRun, out); err != nil {
+					return err
+				}
+				if err := invokeSRCCliWithArgs(cmd.Context(), runner, srcCLI.spec.Binary, intentSpec.Args, unitDir, toContext, rp, out, dryRun); err != nil {
+					return err
+				}
+			} else {
+				// CLI-only intent (e.g. managed-script): the SRC owns
+				// the apply entirely.
+				if err := invokeSRCCli(cmd.Context(), runner, srcCLI.spec, unitDir, toContext, rp, out, dryRun); err != nil {
+					return err
+				}
 			}
 		} else {
 			if err := kubectlApplyKustomize(cmd, toContext, unitDir, dryRun, out); err != nil {
@@ -784,8 +800,15 @@ func kubectlApplyKustomize(cmd *cobra.Command, toContext, dir string, dryRun boo
 // `--dry-run=server` convention through by short-circuiting (we do not
 // assume every SRC CLI supports it).
 func invokeSRCCli(ctx context.Context, runner cluster.CLIRunner, spec *v1.ControllerCLI, unitDir, toContext string, rp *v1.ResolvedPackage, out writer, dryRun bool) error {
+	return invokeSRCCliWithArgs(ctx, runner, spec.Binary, spec.Args, unitDir, toContext, rp, out, dryRun)
+}
+
+// invokeSRCCliWithArgs runs an SRC binary with the given args template,
+// shared by the default (CLI-only) and per-intent (bootstrap-sync)
+// invocation paths.
+func invokeSRCCliWithArgs(ctx context.Context, runner cluster.CLIRunner, binary string, argsTmpl []string, unitDir, toContext string, rp *v1.ResolvedPackage, out writer, dryRun bool) error {
 	if dryRun {
-		fmt.Fprintf(out, "gitups: [dry-run] %s apply %s (skipped: SRC CLI has no uniform --dry-run contract)\n", spec.Binary, unitDir)
+		fmt.Fprintf(out, "gitups: [dry-run] %s (skipped: SRC CLI has no uniform --dry-run contract) [%s]\n", binary, unitDir)
 		return nil
 	}
 	ns, _ := rp.ResolvedValues["namespace"].(string)
@@ -794,13 +817,13 @@ func invokeSRCCli(ctx context.Context, runner cluster.CLIRunner, spec *v1.Contro
 		ManifestPath: unitDir,
 		Namespace:    ns,
 	}
-	args, err := cluster.RenderCLIArgs(spec, ctxFields)
+	args, err := cluster.RenderCLIArgs(&v1.ControllerCLI{Binary: binary, Args: argsTmpl}, ctxFields)
 	if err != nil {
 		return fmt.Errorf("unit %s: %w", rp.Instance, err)
 	}
-	fmt.Fprintf(out, "gitups: %s %s\n", spec.Binary, strings.Join(args, " "))
-	if err := runner.Run(ctx, spec.Binary, args, out, out); err != nil {
-		return fmt.Errorf("unit %s: %s %s: %w", rp.Instance, spec.Binary, strings.Join(args, " "), err)
+	fmt.Fprintf(out, "gitups: %s %s\n", binary, strings.Join(args, " "))
+	if err := runner.Run(ctx, binary, args, out, out); err != nil {
+		return fmt.Errorf("unit %s: %s %s: %w", rp.Instance, binary, strings.Join(args, " "), err)
 	}
 	return nil
 }

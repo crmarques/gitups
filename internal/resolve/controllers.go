@@ -29,6 +29,9 @@ func resolveControllers(
 	if err := rewireManagedScripts(p, cat, fp); err != nil {
 		return nil, err
 	}
+	if err := rewireSRCIntents(p, cat, fp); err != nil {
+		return nil, err
+	}
 	if p.Spec.Controllers == nil || p.Spec.Controllers.KubernetesResources == nil {
 		return nil, nil
 	}
@@ -177,6 +180,49 @@ func rewireManagedScripts(p *v1.Provision, cat *catalog.Catalog, fp *v1.FullProv
 			Instance: srcInstance,
 			Template: srcTemplate,
 			Intent:   intentManagedScript,
+		}
+	}
+	return nil
+}
+
+// rewireSRCIntents tags every resource unit whose template name is a
+// declared bootstrap-sync intent on the selected SRC. The unit stays a
+// regular K8s resource (kubectl applies it at bootstrap), but the
+// Controller pointer directs gitups apply to also invoke the SRC CLI
+// with the intent's args template — the "apply the CR, then run one
+// immediate bootstrap sync so the in-cluster operator's readiness isn't
+// on the critical path" flow.
+//
+// No-op when the Provision declares no service-resources controller or
+// when the SRC declares no `spec.cli.intents`.
+func rewireSRCIntents(p *v1.Provision, cat *catalog.Catalog, fp *v1.FullProvision) error {
+	if p.Spec.Controllers == nil || p.Spec.Controllers.ServiceResources == nil {
+		return nil
+	}
+	srcEntry, srcTemplate, srcInstance, err := findControllerPackage(p, cat, p.Spec.Controllers.ServiceResources.Repo, p.Spec.Controllers.ServiceResources.Instance)
+	if err != nil {
+		return fmt.Errorf("spec.controllers.serviceResources: %w", err)
+	}
+	if srcEntry.Def.Spec.CLI == nil || len(srcEntry.Def.Spec.CLI.Intents) == 0 {
+		return nil
+	}
+	intents := srcEntry.Def.Spec.CLI.Intents
+	for i := range fp.Spec.Packages {
+		rp := &fp.Spec.Packages[i]
+		if rp.UnitType != v1.UnitTypeResource {
+			continue
+		}
+		if rp.Controller != nil {
+			continue
+		}
+		if _, ok := intents[rp.ResourceTemplate]; !ok {
+			continue
+		}
+		rp.Controller = &v1.ControllerBinding{
+			Kind:     v1.RoleSRC,
+			Instance: srcInstance,
+			Template: srcTemplate,
+			Intent:   rp.ResourceTemplate,
 		}
 	}
 	return nil
