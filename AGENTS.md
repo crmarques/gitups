@@ -87,8 +87,9 @@ Kustomize, or OLM — it orchestrates them.
   templates, is in
   [agents/references/declarest.md](agents/references/declarest.md).
   The retired `spec.implements[]` / `spec.bundles[]` /
-  `Provision.spec.repositories[].interfaceResources[]` machinery and
-  the `service-resources` repo type are gone.
+  `Provision.spec.repositories[].interfaceResources[]` machinery is
+  gone. The `service-resources` repo type has been reintroduced in
+  the narrower "skeleton-only" shape described above.
 - **Bootstrap-sync SRC intents.** An SRC may declare
   `spec.cli.intents[<resourceTemplate>].args` in `package.yaml`.
   Resource units whose `resourceTemplate` matches a key are tagged
@@ -107,9 +108,33 @@ Kustomize, or OLM — it orchestrates them.
   pinned `helm template --repo` chart pulls.
 - **Pin everything.** Chart versions, `startingCSV`, catalog sources, image
   tags, and upstream URLs must be exact. Never use `latest` or floating ranges.
-- **Cluster access is explicit.** `apply` is the only mutating cluster command.
-  `wait` may read cluster state via kubectl. `init`, `expand`, `check`,
-  `generate`, `push`, and `status` are cluster-agnostic.
+- **Cluster access is explicit and KRC-declared.** `apply` is the only
+  mutating cluster command. Gitups core carries **no** hard-coded cluster
+  binary — the selected KRC package (`Provision.spec.controllers.kubernetesResources`)
+  declares `spec.cli` with a `binary` and per-intent arg templates, and
+  gitups executes those. Core operations used by apply/wait are
+  enumerated as intent names (`apply`, `apply-dry-run`, `get-json`,
+  `wait-condition`, `wait-crds-established`, `list-crds`, `server-version`,
+  `list-pods-jsonpath`, `pod-logs`); a KRC that wants to own bootstrap
+  must declare every intent gitups uses. `init`, `expand`, `check`,
+  `generate`, `push`, and `status` remain cluster-agnostic.
+- **Service-resources repos.** A `type: service-resources` repository is
+  an output repo gitups renders as a skeleton (README + empty
+  kustomization) for a single declarest-managed service; its
+  `managedServiceRef: {repo, instance}` points at the env repo that
+  declares the corresponding `ManagedService` CR. Service-resources
+  repos carry no `packages[]` — their resource payloads (the JSON/YAML
+  files declarest reconciles) are authored directly in the rendered
+  repo. They give each declarest-reconciled service its own git home
+  (`services/<name>-dsv`) instead of co-resident payload paths under
+  the env repo.
+- **Apply waves gate on readiness.** Between apply waves, `gitups apply`
+  waits for each already-applied unit's declared `readiness[]` checks
+  (package-level or descriptor-level) to pass via the KRC CLI's
+  `wait-condition` intent before starting the next wave. That turns
+  declared `dependsOn` into real "wait for the prior package to be
+  Available before configuring what depends on it" behavior at
+  bootstrap time.
 - **Push is the only outbound mutating command.** `push` talks to a git
   provider (GitHub, GitLab, Gitea, …) to create missing repos and
   publish rendered trees. It uses the user's existing git credential
@@ -228,8 +253,11 @@ After coding:
 - Language: Go.
 - YAML: 2-space indent, no tabs, `apiVersion` and `kind` at the top.
 - Filenames: kebab-case YAML/package dirs; snake_case Go files.
-- External tools: render may call `helm` and `kustomize`; `apply`/`wait` may
-  call `kubectl`; `push` shells to `git` and makes provider REST calls
+- External tools: render may call `helm` and `kustomize`. `apply`/`wait`
+  do **not** hard-code `kubectl`; they run the binary the selected KRC
+  declares in its `spec.cli.binary` and render args from that KRC's
+  `spec.cli.intents[<name>].args` templates (argocd ships a `kubectl`-
+  based set). `push` shells to `git` and makes provider REST calls
   (GitHub, GitLab, Gitea).
 - Validation: use focused unit tests for narrow changes; use golden tests under
   `testdata/golden/` for rendered output changes; use `make check` for Go or

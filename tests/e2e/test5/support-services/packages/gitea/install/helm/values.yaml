@@ -1,0 +1,18 @@
+image:
+  rootless: true
+persistence:
+  enabled: false
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+redis-cluster:
+  enabled: false
+gitea:
+  config:
+    database:
+      DB_TYPE: sqlite3
+    repository:
+      DEFAULT_BRANCH: main
+    server:
+      ROOT_URL: http://gitea.gitea.svc.cluster.local:3000/

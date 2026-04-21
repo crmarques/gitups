@@ -55,14 +55,18 @@ func runHook(ctx context.Context, unit renderUnit, phase string, pkgDir string, 
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	enc := json.NewEncoder(tmp)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(values); err != nil {
-		tmp.Close()
-		return err
+		if closeErr := tmp.Close(); closeErr != nil {
+			return fmt.Errorf("write hook values: %w; close temp file: %v", err, closeErr)
+		}
+		return fmt.Errorf("write hook values: %w", err)
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close hook values file: %w", err)
+	}
 
 	before := snapshotDir(pkgDir)
 	if err := runner.Run(ctx, scriptPath, unit.SourceDir, phase, tmpPath, pkgDir); err != nil {

@@ -1,0 +1,8 @@
+controller:
+  service:
+    type: LoadBalancer
+  ingressClassResource:
+    name: haproxy
+    default: false
+  defaultTLSSecret:
+    enabled: false

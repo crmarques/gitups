@@ -42,10 +42,7 @@ func renderRaw(ctx context.Context, rp *v1.ResolvedPackage, unit renderUnit, pkg
 		if err != nil {
 			return err
 		}
-		dstName := rel
-		if strings.HasSuffix(dstName, ".tmpl") {
-			dstName = strings.TrimSuffix(dstName, ".tmpl")
-		}
+		dstName := strings.TrimSuffix(rel, ".tmpl")
 		dst := filepath.Join(pkgDir, dstName)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
@@ -61,17 +58,25 @@ func renderRaw(ctx context.Context, rp *v1.ResolvedPackage, unit renderUnit, pkg
 	})
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		if closeErr := in.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if closeErr := out.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	_, err = io.Copy(out, in)
 	return err
 }

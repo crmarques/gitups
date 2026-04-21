@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: support-services
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "https://gitea.dsv.local/gitops/support-services.git"
+    path: "."
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

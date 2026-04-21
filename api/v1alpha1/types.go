@@ -47,24 +47,59 @@ const (
 // Domain identifies a top-level directory gitups understands inside a
 // package. Presence of the directory is the opt-in; the value at that key
 // is the set of child units keyed by sub-name (renderer / template /
-// intent). DomainServiceConfig is not a package-level directory — it is
-// the virtual domain carried on a ResolvedPackage routed to a
-// service-resources repo.
+// intent).
 const (
-	DomainInstall       = "install"
-	DomainResources     = "resources"
-	DomainKRC           = "kubernetes-resource-controller"
-	DomainSRC           = "service-resource-controller"
-	DomainServiceConfig = "service-config"
+	DomainInstall   = "install"
+	DomainResources = "resources"
+	DomainKRC       = "kubernetes-resource-controller"
+	DomainSRC       = "service-resource-controller"
 )
 
 // Repository type values accepted by Provision.spec.repositories[].type.
-// Generic vs env is inferred from repoRef presence: env repos carry
-// repoRef, generic repos do not.
+// Generic vs env (kubernetes-resources) is inferred from repoRef
+// presence: env repos carry repoRef, generic repos do not.
 const (
 	// RepoTypeKubernetesResources: any repo whose contents are K8s
-	// manifests. The only supported repo type.
+	// manifests. Generic repos select package installs; env repos
+	// (repoRef set) select or derive package resources.
 	RepoTypeKubernetesResources = "kubernetes-resources"
+
+	// RepoTypeServiceResources: a git repo that will be reconciled by
+	// an SRC (declarest) against a single managed service. Carries
+	// spec.managedServiceRef naming the env repo and instance that
+	// declare the paired ManagedService CR. Gitups renders a skeleton
+	// (README + kustomization.yaml with no resources). Resource
+	// payloads are authored directly by the user (or by a follow-up
+	// `declarest resource save` run against the running service).
+	RepoTypeServiceResources = "service-resources"
+)
+
+// KRC CLI intent names. Every cluster operation gitups core performs
+// during `gitups apply` / `gitups wait` is routed through one of these
+// named intents on the selected KRC package's spec.cli.intents map.
+// Gitups never hard-codes the binary or args — the KRC decides.
+const (
+	// IntentApply: apply a rendered kustomize directory.
+	IntentApply = "apply"
+	// IntentApplyDryRun: dry-run apply (server-side validation).
+	IntentApplyDryRun = "apply-dry-run"
+	// IntentGetJSON: read one resource as JSON.
+	IntentGetJSON = "get-json"
+	// IntentWaitCondition: block until a given Kind/Namespace/Name
+	// satisfies a named status condition.
+	IntentWaitCondition = "wait-condition"
+	// IntentWaitCRDsEstablished: wait until every CRD reaches
+	// condition=Established.
+	IntentWaitCRDsEstablished = "wait-crds-established"
+	// IntentListCRDs: list CRD names (for the fresh-cluster probe).
+	IntentListCRDs = "list-crds"
+	// IntentServerVersion: fetch the cluster server version as JSON.
+	IntentServerVersion = "server-version"
+	// IntentListPodsJSONPath: list pods matching a selector with a
+	// custom jsonpath output (used by CSV diagnostics).
+	IntentListPodsJSONPath = "list-pods-jsonpath"
+	// IntentPodLogs: tail logs from one pod.
+	IntentPodLogs = "pod-logs"
 )
 
 // Renderer identifiers. Every install method and resource descriptor must pick
@@ -188,6 +223,27 @@ type RepositoryDecl struct {
 	Type        string         `json:"type"`
 	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
 	Packages    []PackageRef   `json:"packages,omitempty"`
+	// ManagedServiceRef applies only to `type: service-resources`
+	// repositories. It points at the `managed-service` resource
+	// instance (declarest ManagedService CR) declared in another
+	// repo, so readers can trace a per-service payload repo to the
+	// CR that reconciles it. Rendered into the skeleton README; not
+	// consumed by any gitups rendering path today.
+	ManagedServiceRef *ManagedServiceRef `json:"managedServiceRef,omitempty"`
+}
+
+// ManagedServiceRef identifies one `managed-service` resource
+// instance declared in another repository. Shape matches
+// ControllerAssignment so there's one reference spelling for
+// "a package/resource instance selected elsewhere in this Provision".
+type ManagedServiceRef struct {
+	// Repo is the repository name (pre-`{{.Env}}`-substitution) that
+	// declares the ManagedService.
+	Repo string `json:"repo"`
+	// Instance is the resource-name of the ManagedService CR. For a
+	// declarest managed-service resource declared as
+	// `{template: managed-service, name: gitea}` this is `gitea`.
+	Instance string `json:"instance"`
 }
 
 type RepositoryRef struct {
@@ -232,10 +288,11 @@ type RepositoryBlock struct {
 // substituted. Kept in FullProvision so render can honor user-authored
 // descriptions and preserve repo ordering.
 type ResolvedRepository struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Type        string         `json:"type,omitempty"`
-	RepoRef     *RepositoryRef `json:"repoRef,omitempty"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description,omitempty"`
+	Type              string             `json:"type,omitempty"`
+	RepoRef           *RepositoryRef     `json:"repoRef,omitempty"`
+	ManagedServiceRef *ManagedServiceRef `json:"managedServiceRef,omitempty"`
 }
 
 type ResolvedPackage struct {

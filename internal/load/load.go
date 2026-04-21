@@ -383,15 +383,47 @@ func ValidateProvision(p *v1.Provision) error {
 					return fmt.Errorf("spec.repositories[%d] (%s): packages is required on a generic %s repository", i, r.Name, v1.RepoTypeKubernetesResources)
 				}
 			}
+			if r.ManagedServiceRef != nil {
+				return fmt.Errorf("spec.repositories[%d] (%s): managedServiceRef is only valid on %s repositories", i, r.Name, v1.RepoTypeServiceResources)
+			}
 			if err := validateRepositoryPackages(fmt.Sprintf("spec.repositories[%d].packages", i), r.Packages, envRepo); err != nil {
 				return err
 			}
+		case v1.RepoTypeServiceResources:
+			if r.RepoRef != nil {
+				return fmt.Errorf("spec.repositories[%d] (%s): repoRef is not valid on %s repositories", i, r.Name, v1.RepoTypeServiceResources)
+			}
+			if len(r.Packages) > 0 {
+				return fmt.Errorf("spec.repositories[%d] (%s): %s repositories do not carry packages[] (content is user-authored declarest payloads)", i, r.Name, v1.RepoTypeServiceResources)
+			}
+			if r.ManagedServiceRef == nil {
+				return fmt.Errorf("spec.repositories[%d] (%s): managedServiceRef is required on %s repositories", i, r.Name, v1.RepoTypeServiceResources)
+			}
+			if r.ManagedServiceRef.Repo == "" {
+				return fmt.Errorf("spec.repositories[%d] (%s): managedServiceRef.repo is required", i, r.Name)
+			}
+			if r.ManagedServiceRef.Instance == "" {
+				return fmt.Errorf("spec.repositories[%d] (%s): managedServiceRef.instance is required", i, r.Name)
+			}
+			if !repoNames[r.ManagedServiceRef.Repo] {
+				// forward reference is OK in the loader (ordering-independent);
+				// defer existence check to a second pass.
+			}
 		default:
-			return fmt.Errorf("spec.repositories[%d].type %q invalid (only %q is supported)", i, r.Type, v1.RepoTypeKubernetesResources)
+			return fmt.Errorf("spec.repositories[%d].type %q invalid (supported: %q, %q)", i, r.Type, v1.RepoTypeKubernetesResources, v1.RepoTypeServiceResources)
 		}
 	}
 	if err := validateControllers(p.Spec.Controllers, repoNames); err != nil {
 		return err
+	}
+	// Second pass: managedServiceRef.repo existence.
+	for i, r := range p.Spec.Repositories {
+		if r.Type != v1.RepoTypeServiceResources || r.ManagedServiceRef == nil {
+			continue
+		}
+		if !repoNames[r.ManagedServiceRef.Repo] {
+			return fmt.Errorf("spec.repositories[%d] (%s): managedServiceRef.repo %q is not declared in spec.repositories", i, r.Name, r.ManagedServiceRef.Repo)
+		}
 	}
 	return nil
 }

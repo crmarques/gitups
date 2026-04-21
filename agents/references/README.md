@@ -9,6 +9,7 @@ task touches. Keep this index current when files are added, renamed, or retired.
 | [capabilities.md](capabilities.md) | Capability-binding vocabulary, naming rules, extension checklist. |
 | [cli.md](cli.md) | Commands, flags, workspace behavior, and stderr/stdout rules. |
 | [declarest.md](declarest.md) | Declarest SRC integration: four CRDs, metadata bundles, `spec.declarestBundle`, Provision composition. |
+| [controllers.md](controllers.md) | KRC / SRC controller contracts: `spec.cli` intent set gitups apply/wait uses, argocd's kubectl intent declaration, bootstrap-sync wiring. |
 | [helm.md](helm.md) | Helm renderer invocation, chart pins, values templates, and test stubs. |
 | [olm.md](olm.md) | OLM package rules, subscriptions, OperatorGroups, CSV pins, and waits. |
 | [package-authoring.md](package-authoring.md) | Package catalog layout, inputs, overlays, hooks, and review criteria. |

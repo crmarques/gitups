@@ -172,6 +172,31 @@ func Render(ctx context.Context, fp *v1.FullProvision, cat *catalog.Catalog, opt
 		return err
 	}
 
+	// Service-resources repos carry no install/resource units, so
+	// byRepo has no entry for them; emit the skeleton manually
+	// (README.md + empty kustomization.yaml). The pruning pass later
+	// needs to know these repos exist.
+	for i := range fp.Spec.Repositories {
+		r := &fp.Spec.Repositories[i]
+		if r.Type != v1.RepoTypeServiceResources {
+			continue
+		}
+		repoDir := filepath.Join(tempDir, r.Name)
+		if err := os.MkdirAll(repoDir, 0o755); err != nil {
+			return fmt.Errorf("service-resources repo %s: mkdir %s: %w", r.Name, repoDir, err)
+		}
+		if err := writeKustomization(filepath.Join(repoDir, "kustomization.yaml"), nil); err != nil {
+			return fmt.Errorf("service-resources repo %s: write kustomization: %w", r.Name, err)
+		}
+		if err := writeServiceResourcesREADME(repoDir, r, fp); err != nil {
+			return fmt.Errorf("service-resources repo %s: write README: %w", r.Name, err)
+		}
+		// Register in byRepo so the --prune pass keeps it.
+		if _, ok := byRepo[r.Name]; !ok {
+			byRepo[r.Name] = nil
+		}
+	}
+
 	if !opts.SuppressFullProvision {
 		if opts.SourceFullProv != "" {
 			src, err := os.ReadFile(opts.SourceFullProv)
@@ -341,8 +366,32 @@ func renderUnitFor(rp *v1.ResolvedPackage, entry catalog.Entry, cat *catalog.Cat
 			return renderUnit{}, fmt.Errorf("controller package %q not in catalog", rp.Controller.Template)
 		}
 		domain := controllerDomainFor(rp.Controller.Kind)
-		u, ok := ctrlEntry.LookupDomainUnit(domain, rp.Controller.Intent)
-		if !ok {
+		u, domainOK := ctrlEntry.LookupDomainUnit(domain, rp.Controller.Intent)
+		if !domainOK {
+			// Bootstrap-sync intents (e.g. declarest's sync-policy)
+			// declare their CLI invocation under spec.cli.intents but
+			// do not ship an intent directory — the rendered shape is
+			// the CR itself (from the controller's own resources/).
+			// Fall through to the regular resource template for
+			// render; the Controller pointer still drives apply-time
+			// CLI invocation.
+			if rp.UnitType == v1.UnitTypeResource {
+				u2, ok2 := entry.LookupDomainUnit(rp.Domain, rp.ResourceTemplate)
+				if !ok2 {
+					return renderUnit{}, fmt.Errorf("%s package %q does not implement intent %q (no domain unit) and resource template %q is not declared on the source package",
+						domain, ctrlEntry.Def.Metadata.Name, rp.Controller.Intent, rp.ResourceTemplate)
+				}
+				return renderUnit{
+					SourceDir: u2.SourceDir,
+					Renderer:  u2.Descriptor.Renderer,
+					OLM:       u2.Descriptor.OLM,
+					Helm:      u2.Descriptor.Helm,
+					Kustomize: u2.Descriptor.Kustomize,
+					Hooks:     u2.Descriptor.Hooks,
+					Overlays:  append([]string(nil), u2.Descriptor.Overlays...),
+					Readiness: append([]v1.ReadinessCheck(nil), u2.Descriptor.Readiness...),
+				}, nil
+			}
 			return renderUnit{}, fmt.Errorf("%s package %q does not implement intent %q",
 				domain, ctrlEntry.Def.Metadata.Name, rp.Controller.Intent)
 		}
@@ -660,4 +709,23 @@ func encodeReadiness(checks []v1.ReadinessCheck) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// writeServiceResourcesREADME emits a small marker README for a
+// skeleton service-resources repo. Declarest authors payload files
+// here (e.g. `orgs/acme.json`, `repos/acme/gitops.json`) matching the
+// bundle's logical path layout; gitups does not author those payloads.
+func writeServiceResourcesREADME(dir string, r *v1.ResolvedRepository, fp *v1.FullProvision) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", r.Name)
+	fmt.Fprintf(&b, "Declarest service-resources repository rendered by gitups from FullProvision %q.\n\n",
+		fp.Metadata.Name)
+	if r.ManagedServiceRef != nil {
+		fmt.Fprintf(&b, "Reconciled by declarest against the `ManagedService/%s` CR declared in repo `%s`.\n\n",
+			r.ManagedServiceRef.Instance, r.ManagedServiceRef.Repo)
+	}
+	fmt.Fprintf(&b, "Contents are authored directly by users (or seeded by `declarest resource save`).\n")
+	fmt.Fprintf(&b, "Each file's path must match the logical path layout declared by the bundle\n")
+	fmt.Fprintf(&b, "the paired ManagedService's `spec.metadata.bundle` points at.\n")
+	return os.WriteFile(filepath.Join(dir, "README.md"), []byte(b.String()), 0o644)
 }

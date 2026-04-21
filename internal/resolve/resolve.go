@@ -151,12 +151,23 @@ func collectRefs(p *v1.Provision, cat *catalog.Catalog, envKey string) ([]ref, [
 	resolvedRepos := make([]v1.ResolvedRepository, 0, len(p.Spec.Repositories))
 	for ri, repo := range p.Spec.Repositories {
 		repoName := substituteEnv(repo.Name, envKey)
+		msr := cloneManagedServiceRef(repo.ManagedServiceRef)
+		if msr != nil {
+			msr.Repo = substituteEnv(msr.Repo, envKey)
+		}
 		resolvedRepos = append(resolvedRepos, v1.ResolvedRepository{
-			Name:        repoName,
-			Description: repo.Description,
-			Type:        repo.Type,
-			RepoRef:     cloneRepoRef(repo.RepoRef),
+			Name:              repoName,
+			Description:       repo.Description,
+			Type:              repo.Type,
+			RepoRef:           cloneRepoRef(repo.RepoRef),
+			ManagedServiceRef: msr,
 		})
+		// Service-resources repos carry no install/resource units —
+		// they are declarest payload skeletons the user edits
+		// directly. The renderer emits a README + empty kustomization.
+		if repo.Type == v1.RepoTypeServiceResources {
+			continue
+		}
 		if repo.RepoRef == nil {
 			// Generic: collects install refs from packages[].
 			for pi, pr := range repo.Packages {
@@ -294,6 +305,14 @@ func renderedDirFor(r ref) string {
 }
 
 func cloneRepoRef(in *v1.RepositoryRef) *v1.RepositoryRef {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneManagedServiceRef(in *v1.ManagedServiceRef) *v1.ManagedServiceRef {
 	if in == nil {
 		return nil
 	}

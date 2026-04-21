@@ -6,11 +6,17 @@
 //	gitups generate <name> [-d <dir>] [--context c] [--allow-placeholders]
 //	                                                            FullProvision -> repo tree
 //	gitups apply    <name> --to <ctx> [-d <dir>] [--dry-run] [--allow-placeholders] [--generate-secrets]
-//	                                                            kubectl apply -k each repo dir
+//	                                                            apply each repo dir via the KRC-declared CLI
 //	gitups status   <name> [-d <dir>]                           drift report
 //
 // Each <name> owns a workspace at <dir>/<name>/ holding provision.yaml,
 // full-provision.yaml, and the rendered repo subdirs as siblings.
+//
+// Apply and wait never hard-code a cluster binary. The selected KRC
+// package (via Provision.spec.controllers.kubernetesResources) declares
+// spec.cli.binary and spec.cli.intents.<name>.args; gitups executes the
+// declared binary with the rendered args for each needed intent
+// (v1.IntentApply, v1.IntentGetJSON, v1.IntentWaitCondition, …).
 package main
 
 import (
@@ -269,7 +275,7 @@ func newCheckCmd() *cobra.Command {
 func newGenerateCmd() *cobra.Command {
 	var (
 		outputDir         string
-		kubectlContext    string
+		kubeContext       string
 		allowPlaceholders bool
 		prune             bool
 		skipDetCheck      bool
@@ -303,7 +309,7 @@ func newGenerateCmd() *cobra.Command {
 			if err := ensureBinaries(); err != nil {
 				return err
 			}
-			ctx := kubectlContext
+			ctx := kubeContext
 			if ctx == "" {
 				ctx = currentKubectlContext()
 			}
@@ -325,7 +331,7 @@ func newGenerateCmd() *cobra.Command {
 		},
 	}
 	addOutputDirFlag(cmd, &outputDir)
-	cmd.Flags().StringVar(&kubectlContext, "context", "", "kubectl context label; defaults to current context")
+	cmd.Flags().StringVar(&kubeContext, "context", "", "cluster context label stamped into the rendered overlay (advisory)")
 	cmd.Flags().BoolVar(&allowPlaceholders, "allow-placeholders", false, "generate even when placeholders remain")
 	cmd.Flags().BoolVar(&prune, "prune", false, "remove top-level directories not produced by this render pass")
 	cmd.Flags().BoolVar(&skipDetCheck, "skip-determinism-check", false, "skip the second render pass that verifies byte-identical output")
@@ -530,12 +536,12 @@ func newApplyCmd() *cobra.Command {
 		waitTimeout       time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "apply <name> --to <kubectl-context>",
-		Short: "Bootstrap the target cluster: kubectl + SRC CLI for the bootstrap subset, then hand off to the in-cluster KRC/SRC",
+		Use:   "apply <name> --to <cluster-context>",
+		Short: "Bootstrap the target cluster via the KRC-declared CLI (+ SRC CLI for SRC-owned units), then hand off to the in-cluster KRC/SRC",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toContext == "" {
-				return fmt.Errorf("--to <kubectl-context> is required")
+				return fmt.Errorf("--to <cluster-context> is required")
 			}
 			ws, err := newWorkspace(outputDir, args[0])
 			if err != nil {
@@ -562,40 +568,49 @@ func newApplyCmd() *cobra.Command {
 				return fmt.Errorf("%d unfilled placeholder(s) in %s (re-run with --allow-placeholders to force)",
 					len(fp.Spec.Placeholders), ws.FullProvision)
 			}
-			if _, err := exec.LookPath("kubectl"); err != nil {
-				return fmt.Errorf("required binary %q not found in PATH", "kubectl")
-			}
 
 			out := cmd.ErrOrStderr()
 
-			// Decide flow: full-tree (today's behaviour) or bootstrap-only
-			// (hand off to the KRC/SRC once their own units are applied).
-			// --full wins; otherwise presence of a Provision-level
-			// controllers block triggers the bootstrap flow.
-			var prov *v1.Provision
+			// Load the Provision: apply uses it to locate the KRC
+			// package (whose spec.cli declaration defines the cluster
+			// binary) and the SRC package.
 			provPath := filepath.Join(ws.Root, "provision.yaml")
-			if _, err := os.Stat(provPath); err == nil {
-				prov, err = load.Provision(provPath)
-				if err != nil {
-					return fmt.Errorf("load provision %s: %w", provPath, err)
-				}
+			prov, err := load.Provision(provPath)
+			if err != nil {
+				return fmt.Errorf("load provision %s: %w", provPath, err)
 			}
-			hasControllers := prov != nil && prov.Spec.Controllers != nil &&
-				(prov.Spec.Controllers.KubernetesResources != nil || prov.Spec.Controllers.ServiceResources != nil)
+			if prov.Spec.Controllers == nil || prov.Spec.Controllers.KubernetesResources == nil {
+				return fmt.Errorf("apply requires spec.controllers.kubernetesResources in %s — the KRC declares the cluster binary gitups uses", provPath)
+			}
 
-			if full || !hasControllers {
-				return applyFullTree(cmd, fp, ws, toContext, dryRun, waitCRDs, waitTimeout, out)
+			cat, err := buildProvisionCatalog(prov, ws)
+			if err != nil {
+				return err
 			}
-			return applyBootstrapOnly(cmd, fp, prov, ws, toContext, dryRun, waitCRDs, waitTimeout, out)
+			kubeClient, err := newKubeClientFromProvision(prov, cat, toContext)
+			if err != nil {
+				return err
+			}
+			if _, err := exec.LookPath(kubeClient.Binary()); err != nil {
+				return fmt.Errorf("KRC %q: required binary %q (declared in spec.cli.binary) not found in PATH",
+					kubeClient.KRCName(), kubeClient.Binary())
+			}
+
+			hasSRC := prov.Spec.Controllers.ServiceResources != nil
+
+			if full || !hasSRC {
+				return applyFullTree(cmd, fp, ws, kubeClient, dryRun, waitCRDs, waitTimeout, out)
+			}
+			return applyBootstrapOnly(cmd, fp, prov, cat, ws, kubeClient, dryRun, waitCRDs, waitTimeout, out)
 		},
 	}
 	addOutputDirFlag(cmd, &outputDir)
-	cmd.Flags().StringVar(&toContext, "to", "", "kubectl context to apply into (required)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "kubectl apply --dry-run=server; no cluster state changes")
+	cmd.Flags().StringVar(&toContext, "to", "", "cluster context to apply into (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "invoke the KRC's apply-dry-run intent; no cluster state changes")
 	cmd.Flags().BoolVar(&allowPlaceholders, "allow-placeholders", false, "apply even when placeholders remain in FullProvision")
 	cmd.Flags().BoolVar(&generateSecrets, "generate-secrets", false, "before applying, fill placeholders whose input declared a generator and rewrite FullProvision in place")
 	cmd.Flags().BoolVar(&waitCRDs, "wait-crds", false, "after each repo, wait for its OLM subscriptions to Succeed before the next repo")
-	cmd.Flags().BoolVar(&full, "full", false, "apply the whole rendered tree via kubectl even when spec.controllers declares a KRC/SRC (for SRC-less setups or disaster recovery)")
+	cmd.Flags().BoolVar(&full, "full", false, "apply the whole rendered tree even when spec.controllers declares a KRC/SRC (for SRC-less setups or disaster recovery)")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "per-repo wait budget when --wait-crds is set")
 	cmd.SetContext(context.Background())
 	return cmd
@@ -628,35 +643,41 @@ func fillGeneratedSecrets(fp *v1.FullProvision, fpPath string, out writer) error
 	return nil
 }
 
-// applyFullTree keeps the today's kubectl apply -k <repo> per repo
-// behaviour. Used when no controllers are declared and when --full is
-// passed. Dependency ordering is implicit in fp.Spec.Packages' topo
-// sort, so first-appearance per repo gives a safe apply order.
-func applyFullTree(cmd *cobra.Command, fp *v1.FullProvision, ws workspace, toContext string, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
+// applyFullTree applies each rendered repo in FullProvision ordering
+// via the KRC-declared apply intent. Used when no SRC is declared or
+// when --full is passed. Dependency ordering is implicit in
+// fp.Spec.Packages' topo sort, so first-appearance per repo gives a
+// safe apply order. Service-resources repos (declarest payload
+// skeletons) are skipped — they are not K8s manifest trees.
+func applyFullTree(cmd *cobra.Command, fp *v1.FullProvision, ws workspace, kc *cluster.KubeClient, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
+	skip := serviceResourcesRepoSet(fp)
 	seen := map[string]bool{}
 	var repoOrder []string
 	for i := range fp.Spec.Packages {
 		repo := fp.Spec.Packages[i].RenderedPaths.Repo
+		if skip[repo] {
+			continue
+		}
 		if !seen[repo] {
 			seen[repo] = true
 			repoOrder = append(repoOrder, repo)
 		}
 	}
-	fmt.Fprintf(out, "gitups: applying %d repo(s) to context %q (dry-run=%v, mode=full)\n",
-		len(repoOrder), toContext, dryRun)
+	fmt.Fprintf(out, "gitups: applying %d repo(s) via %s (dry-run=%v, mode=full)\n",
+		len(repoOrder), kc.Binary(), dryRun)
 	for _, repo := range repoOrder {
 		repoDir := filepath.Join(ws.Root, repo)
 		if _, err := os.Stat(repoDir); err != nil {
 			return fmt.Errorf("%s not rendered (run `gitups generate %s` first): %w", repo, ws.Name, err)
 		}
-		if err := kubectlApplyKustomize(cmd, toContext, repoDir, dryRun, out); err != nil {
+		if err := applyUnitDir(cmd.Context(), kc, repoDir, dryRun, out); err != nil {
 			return err
 		}
 		if waitCRDs && !dryRun {
 			subs := cluster.SubscriptionsForRepo(fp.Spec.Packages, repo)
 			if len(subs) > 0 {
 				fmt.Fprintf(out, "gitups: waiting on %d subscription(s) from %s before next repo\n", len(subs), repo)
-				if err := cluster.WaitForSubscriptions(cmd.Context(), toContext, subs, cluster.WaitOptions{Timeout: waitTimeout, Out: out}); err != nil {
+				if err := cluster.WaitForSubscriptions(cmd.Context(), kc, subs, cluster.WaitOptions{Timeout: waitTimeout, Out: stdioWriter{w: out}}); err != nil {
 					return fmt.Errorf("wait after %s: %w", repo, err)
 				}
 			}
@@ -674,15 +695,15 @@ func applyFullTree(cmd *cobra.Command, fp *v1.FullProvision, ws workspace, toCon
 // to reconcile after the Applications it owns land in the cluster.
 //
 // Routing is per-unit, not per-repo, because the bootstrap subset
-// spans multiple repos and skips siblings within each one. kubectl
-// apply -k operates on each unit directory; SRC-owned units go through
-// the declared SRC CLI.
-func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provision, ws workspace, toContext string, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
-	cat, err := buildProvisionCatalog(prov, ws)
-	if err != nil {
-		return err
-	}
-
+// spans multiple repos and skips siblings within each one. The KRC's
+// declared apply intent lands every non-SRC unit; SRC-owned units go
+// through the declared SRC CLI.
+//
+// Between apply waves we gate progression on each preceding unit's
+// declared readiness checks via the KRC's wait-condition intent so
+// "configure gitea repo" can't fire before the gitea Deployment is
+// Available.
+func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provision, cat *catalog.Catalog, ws workspace, kc *cluster.KubeClient, dryRun, waitCRDs bool, waitTimeout time.Duration, out writer) error {
 	planned := bootstrapSubset(fp)
 	if len(planned) == 0 {
 		return fmt.Errorf("bootstrap subset is empty; nothing to apply")
@@ -704,10 +725,10 @@ func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provi
 		}
 	}
 
-	fmt.Fprintf(out, "gitups: bootstrap-only mode; %d unit(s) to apply to context %q (dry-run=%v)\n",
-		len(planned), toContext, dryRun)
+	fmt.Fprintf(out, "gitups: bootstrap-only mode; %d unit(s) to apply via %s (dry-run=%v)\n",
+		len(planned), kc.Binary(), dryRun)
 	writeBootstrapPlan(out, fp, planned)
-	if warnings := compatibilityWarnings(cmd.Context(), cat, planned, toContext); len(warnings) > 0 {
+	if warnings := compatibilityWarnings(cmd.Context(), cat, planned, kc); len(warnings) > 0 {
 		for _, w := range warnings {
 			fmt.Fprintf(out, "gitups: compatibility warning — %s\n", w)
 		}
@@ -715,7 +736,20 @@ func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provi
 
 	appliedRepos := map[string]bool{}
 	runner := cluster.DefaultCLIRunner{}
+	// Track which wave we're on so we can gate progression on
+	// readiness checks declared by prior-wave units.
+	currentWave := -1
+	var waveReady []readinessTarget
 	for _, rp := range planned {
+		if rp.ApplyWave != currentWave {
+			if !dryRun && len(waveReady) > 0 {
+				if err := waitForReadiness(cmd.Context(), kc, waveReady, waitTimeout, out); err != nil {
+					return err
+				}
+			}
+			waveReady = nil
+			currentWave = rp.ApplyWave
+		}
 		unitDir := filepath.Join(ws.Root, rp.RenderedPaths.Repo, rp.RenderedPaths.Dir)
 		if _, err := os.Stat(unitDir); err != nil {
 			return fmt.Errorf("unit %s not rendered at %s (run `gitups generate %s` first): %w", rp.Instance, unitDir, ws.Name, err)
@@ -724,37 +758,44 @@ func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provi
 			intent := rp.Controller.Intent
 			if intentSpec, ok := srcCLI.spec.Intents[intent]; ok {
 				// Bootstrap-sync intent: apply the rendered CR via
-				// kubectl so the in-cluster operator can take over
-				// later, then invoke the SRC's CLI for one immediate
-				// reconciliation using the rendered resource as input.
-				if err := kubectlApplyKustomize(cmd, toContext, unitDir, dryRun, out); err != nil {
+				// the KRC-declared CLI so the in-cluster operator
+				// can take over later, then invoke the SRC's CLI
+				// for one immediate reconciliation using the
+				// rendered resource as input.
+				if err := applyUnitDir(cmd.Context(), kc, unitDir, dryRun, out); err != nil {
 					return err
 				}
-				if err := invokeSRCCliWithArgs(cmd.Context(), runner, srcCLI.spec.Binary, intentSpec.Args, unitDir, toContext, rp, out, dryRun); err != nil {
+				if err := invokeSRCCliWithArgs(cmd.Context(), runner, srcCLI.spec.Binary, intentSpec.Args, unitDir, kc.KubeContext(), rp, out, dryRun); err != nil {
 					return err
 				}
 			} else {
 				// CLI-only intent (e.g. managed-script): the SRC owns
 				// the apply entirely.
-				if err := invokeSRCCli(cmd.Context(), runner, srcCLI.spec, unitDir, toContext, rp, out, dryRun); err != nil {
+				if err := invokeSRCCli(cmd.Context(), runner, srcCLI.spec, unitDir, kc.KubeContext(), rp, out, dryRun); err != nil {
 					return err
 				}
 			}
 		} else {
-			if err := kubectlApplyKustomize(cmd, toContext, unitDir, dryRun, out); err != nil {
+			if err := applyUnitDir(cmd.Context(), kc, unitDir, dryRun, out); err != nil {
 				return err
 			}
 		}
 		appliedRepos[rp.RenderedPaths.Repo] = true
+		waveReady = append(waveReady, readinessTargetsFor(rp, cat)...)
 		if waitCRDs && !dryRun && rp.Renderer == "olm" {
 			ns, _ := rp.ResolvedValues["namespace"].(string)
 			if ns != "" {
 				sub := []cluster.SubscriptionRef{{Namespace: ns, Name: rp.Instance}}
 				fmt.Fprintf(out, "gitups: waiting on subscription %s/%s\n", ns, rp.Instance)
-				if err := cluster.WaitForSubscriptions(cmd.Context(), toContext, sub, cluster.WaitOptions{Timeout: waitTimeout, Out: out}); err != nil {
+				if err := cluster.WaitForSubscriptions(cmd.Context(), kc, sub, cluster.WaitOptions{Timeout: waitTimeout, Out: stdioWriter{w: out}}); err != nil {
 					return fmt.Errorf("wait after %s: %w", rp.Instance, err)
 				}
 			}
+		}
+	}
+	if !dryRun && len(waveReady) > 0 {
+		if err := waitForReadiness(cmd.Context(), kc, waveReady, waitTimeout, out); err != nil {
+			return err
 		}
 	}
 	fmt.Fprintf(out, "gitups: bootstrap complete; handoff to in-cluster KRC/SRC.\n")
@@ -764,34 +805,155 @@ func applyBootstrapOnly(cmd *cobra.Command, fp *v1.FullProvision, prov *v1.Provi
 // writer narrows cobra's io.Writer to the subset we need. Eases testing.
 type writer interface{ Write([]byte) (int, error) }
 
-// kubectlApplyKustomize applies one kustomize dir with retry after CRD
-// establishment. Shape lifted from the pre-Phase-4 per-repo apply so
-// apply semantics remain identical for each bootstrap unit.
-func kubectlApplyKustomize(cmd *cobra.Command, toContext, dir string, dryRun bool, out writer) error {
-	kargs := []string{"--context", toContext, "apply", "-k", dir, "--server-side", "--force-conflicts"}
-	if dryRun {
-		kargs = append(kargs, "--dry-run=server")
-	}
+// applyUnitDir runs the KRC's apply (or apply-dry-run) intent against
+// dir with a single CRD-establishment retry. Gitups core knows nothing
+// about kubectl — the KRC's spec.cli.intents.apply template decides
+// what runs.
+func applyUnitDir(ctx context.Context, kc *cluster.KubeClient, dir string, dryRun bool, out writer) error {
 	run := func(label string) error {
-		fmt.Fprintf(out, "gitups: kubectl %s [%s]\n", strings.Join(kargs, " "), label)
-		k := exec.CommandContext(cmd.Context(), "kubectl", kargs...)
-		k.Stdout = cmd.OutOrStdout()
-		k.Stderr = out
-		return k.Run()
+		fmt.Fprintf(out, "gitups: apply [%s]\n", label)
+		return kc.ApplyKustomize(ctx, dir, dryRun, stdioWriter{w: out})
 	}
 	if err := run("pass 1"); err != nil {
 		if dryRun {
-			return fmt.Errorf("kubectl apply -k %s: %w", dir, err)
+			return fmt.Errorf("apply -k %s: %w", dir, err)
 		}
 		fmt.Fprintf(out, "gitups: pass 1 reported errors; waiting for CRD establishment before retry\n")
-		if waitErr := waitForCRDsEstablished(cmd.Context(), toContext, out); waitErr != nil {
+		if waitErr := waitForCRDsEstablished(ctx, kc, out); waitErr != nil {
 			fmt.Fprintf(out, "gitups: CRD establishment wait did not complete cleanly: %v\n", waitErr)
 		}
 		if err2 := run("pass 2"); err2 != nil {
-			return fmt.Errorf("kubectl apply -k %s (both passes failed): %w", dir, err2)
+			return fmt.Errorf("apply -k %s (both passes failed): %w", dir, err2)
 		}
 	}
 	return nil
+}
+
+// serviceResourcesRepoSet returns the set of rendered repo names whose
+// declared type is service-resources. Those repos carry declarest
+// resource-payload skeletons, not K8s manifests, so applyFullTree
+// skips them.
+func serviceResourcesRepoSet(fp *v1.FullProvision) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range fp.Spec.Repositories {
+		if r.Type == v1.RepoTypeServiceResources {
+			out[r.Name] = true
+		}
+	}
+	return out
+}
+
+// readinessTarget is one declared cluster-object readiness check
+// gitups must satisfy between apply waves. Sourced from a rendered
+// unit's .metadata.annotations["gitups.io/readiness"] annotation (the
+// JSON emitted by render.encodeReadiness).
+type readinessTarget struct {
+	Kind, Namespace, Name, Condition string
+}
+
+// readinessTargetsFor reads the just-rendered unit's readiness checks
+// from the catalog. Matches the ordering used by the renderer: unit's
+// own descriptor.readiness plus the owning package.yaml's
+// spec.readiness when the unit is the package's canonical install.
+func readinessTargetsFor(rp *v1.ResolvedPackage, cat *catalog.Catalog) []readinessTarget {
+	entry, ok := cat.Lookup(rp.Template)
+	if !ok {
+		return nil
+	}
+	tctx := map[string]string{
+		"Instance":         rp.Instance,
+		"PackageInstance":  rp.PackageInstance,
+		"ResourceTemplate": rp.ResourceTemplate,
+		"ResourceName":     rp.ResourceName,
+	}
+	_ = tctx // reserved for future template-aware readiness; today we
+	// only substitute no template tokens because live readiness lists
+	// in gitups-packages are all literal.
+	var checks []v1.ReadinessCheck
+	// Package-level readiness applies once per install.
+	if rp.UnitType == v1.UnitTypeInstall {
+		checks = append(checks, entry.Def.Spec.Readiness...)
+	}
+	// Per-unit readiness from the authoring descriptor.
+	if u, ok := entry.LookupDomainUnit(rp.Domain, rp.ResourceTemplate); ok {
+		checks = append(checks, u.Descriptor.Readiness...)
+	} else if u, ok := entry.LookupDomainUnit(v1.DomainInstall, rp.InstallMethod); ok {
+		checks = append(checks, u.Descriptor.Readiness...)
+	}
+	out := make([]readinessTarget, 0, len(checks))
+	for _, c := range checks {
+		if c.Kind == "" || c.Name == "" || c.Condition == "" {
+			continue
+		}
+		out = append(out, readinessTarget{Kind: c.Kind, Namespace: c.Namespace, Name: c.Name, Condition: c.Condition})
+	}
+	return out
+}
+
+// waitForReadiness blocks on every target's wait-condition via the KRC
+// CLI. Duplicate targets (same kind/ns/name/condition) are collapsed.
+//
+// Readiness in gitups is forward-looking advice: an OLM-installed
+// operator's package-level readiness typically points at a CR instance
+// (argocd-server, keycloak-server) that only exists after a later
+// wave applies its instance CR. The gate is therefore best-effort —
+// if the object doesn't exist or the wait times out, we log and
+// continue rather than block bootstrap. The declared dependsOn DAG
+// stays the real ordering authority.
+func waitForReadiness(ctx context.Context, kc *cluster.KubeClient, targets []readinessTarget, timeout time.Duration, out writer) error {
+	seen := map[readinessTarget]bool{}
+	perTarget := timeout
+	if perTarget > 2*time.Minute || perTarget <= 0 {
+		perTarget = 2 * time.Minute
+	}
+	for _, t := range targets {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		fmt.Fprintf(out, "gitups: wave gate — %s/%s/%s condition=%s (best-effort, %s)\n", t.Kind, t.Namespace, t.Name, t.Condition, perTarget)
+		if err := kc.WaitCondition(ctx, t.Namespace, t.Kind, t.Name, t.Condition, perTarget, stdioWriter{w: out}); err != nil {
+			fmt.Fprintf(out, "gitups: wave gate skipped %s/%s/%s — %v (continuing; dependsOn ordering is still authoritative)\n", t.Kind, t.Namespace, t.Name, err)
+		}
+	}
+	return nil
+}
+
+// newKubeClientFromProvision resolves the Provision's KRC assignment to
+// the KRC's spec.cli block and returns a cluster.KubeClient bound to
+// toContext. Returns a clear error when the KRC package has no
+// spec.cli or any needed intent is missing — surfaced early so apply
+// fails cleanly before touching the cluster.
+func newKubeClientFromProvision(prov *v1.Provision, cat *catalog.Catalog, toContext string) (*cluster.KubeClient, error) {
+	if prov.Spec.Controllers == nil || prov.Spec.Controllers.KubernetesResources == nil {
+		return nil, fmt.Errorf("spec.controllers.kubernetesResources is required — the KRC declares the cluster binary gitups uses")
+	}
+	a := prov.Spec.Controllers.KubernetesResources
+	for _, r := range prov.Spec.Repositories {
+		if r.Type != v1.RepoTypeKubernetesResources || r.RepoRef != nil || r.Name != a.Repo {
+			continue
+		}
+		for _, pr := range r.Packages {
+			entry, ok := cat.Lookup(pr.Template)
+			if !ok {
+				continue
+			}
+			instance := pr.Instance
+			if instance == "" {
+				parts := strings.Split(pr.Template, "/")
+				instance = parts[len(parts)-1]
+			}
+			if instance != a.Instance {
+				continue
+			}
+			if entry.Def.Spec.CLI == nil || entry.Def.Spec.CLI.Binary == "" {
+				return nil, fmt.Errorf("KRC package %q has no spec.cli declared — gitups needs it to know what binary to run for apply/wait",
+					entry.Def.Metadata.Name)
+			}
+			return cluster.NewKubeClient(entry.Def.Spec.CLI, entry.Def.Metadata.Name, toContext, cluster.DefaultCLIRunner{})
+		}
+	}
+	return nil, fmt.Errorf("KRC instance %q not found in repo %q", a.Instance, a.Repo)
 }
 
 // invokeSRCCli renders ControllerCLI.Args from the fixed template
@@ -829,15 +991,13 @@ func invokeSRCCliWithArgs(ctx context.Context, runner cluster.CLIRunner, binary 
 }
 
 // compatibilityWarnings probes the target cluster's Kubernetes server
-// version and cross-checks it against each planned package's declared
-// spec.compatibility.kubernetes list. Returns a slice of human-readable
-// strings to print at apply start. Never blocks apply — the strictest
-// guarantee we offer today is "visible at the top of the run". Full
-// semver satisfaction is deferred; this check uses string-prefix
-// matching on the server minor version, which is enough to catch the
-// "OLM v0.14 breaks on K8s 1.35" class of issue we saw in the dsv run.
-func compatibilityWarnings(ctx context.Context, cat *catalog.Catalog, planned []*v1.ResolvedPackage, toContext string) []string {
-	serverVer := kubeServerMinor(ctx, toContext)
+// version (via the KRC's server-version intent) and cross-checks it
+// against each planned package's declared spec.compatibility.kubernetes
+// list. Returns a slice of human-readable strings to print at apply
+// start. Never blocks apply — the strictest guarantee we offer today is
+// "visible at the top of the run".
+func compatibilityWarnings(ctx context.Context, cat *catalog.Catalog, planned []*v1.ResolvedPackage, kc *cluster.KubeClient) []string {
+	serverVer := kubeServerMinor(ctx, kc)
 	if serverVer == "" {
 		return nil
 	}
@@ -866,27 +1026,14 @@ func compatibilityWarnings(ctx context.Context, cat *catalog.Catalog, planned []
 }
 
 // kubeServerMinor returns a string like "1.35" for the target
-// cluster. Empty on any error.
-func kubeServerMinor(ctx context.Context, kctx string) string {
-	body, err := exec.CommandContext(ctx, "kubectl", "--context", kctx, "version", "-o", "json").Output()
+// cluster. Empty on any error. Uses the KRC's server-version intent,
+// so gitups core carries no kubectl knowledge.
+func kubeServerMinor(ctx context.Context, kc *cluster.KubeClient) string {
+	body, err := kc.ServerVersion(ctx)
 	if err != nil {
 		return ""
 	}
-	var d struct {
-		ServerVersion struct {
-			Major string `json:"major"`
-			Minor string `json:"minor"`
-		} `json:"serverVersion"`
-	}
-	if err := yaml.Unmarshal(body, &d); err != nil {
-		return ""
-	}
-	if d.ServerVersion.Major == "" || d.ServerVersion.Minor == "" {
-		return ""
-	}
-	// Minor often carries a "+" suffix for vendor-patched clusters.
-	minor := strings.TrimRight(d.ServerVersion.Minor, "+")
-	return d.ServerVersion.Major + "." + minor
+	return cluster.ParseServerMinor(body)
 }
 
 // k8sVersionSatisfies applies a minimal compatibility grammar: each
@@ -1073,39 +1220,26 @@ func buildProvisionCatalog(prov *v1.Provision, ws workspace) (*catalog.Catalog, 
 	return catalog.Build(prov.Spec.Sources, ws.Root)
 }
 
-func waitForCRDsEstablished(ctx context.Context, kubectlContext string, out interface{ Write([]byte) (int, error) }) error {
-	// On a fresh cluster no CRDs exist yet; `kubectl wait --all` emits
+func waitForCRDsEstablished(ctx context.Context, kc *cluster.KubeClient, out interface{ Write([]byte) (int, error) }) error {
+	// On a fresh cluster no CRDs exist yet; waiting with --all emits
 	// "no matching resources found" which looks like a failure but is
 	// benign. Probe first and skip cleanly in that case.
-	if !crdsExist(ctx, kubectlContext) {
-		fmt.Fprintf(out, "gitups: no CRDs yet on %s; skipping establishment wait\n", kubectlContext)
+	if !crdsExist(ctx, kc) {
+		fmt.Fprintf(out, "gitups: no CRDs yet on %s; skipping establishment wait\n", kc.KubeContext())
 		return nil
 	}
-	args := []string{
-		"--context", kubectlContext,
-		"wait",
-		"--for=condition=Established",
-		"crd",
-		"--all",
-		"--timeout=60s",
-	}
-	fmt.Fprintf(out, "gitups: kubectl %s\n", strings.Join(args, " "))
-	k := exec.CommandContext(ctx, "kubectl", args...)
-	k.Stdout = out
-	k.Stderr = out
-	return k.Run()
+	return kc.WaitCRDsEstablished(ctx, 60*time.Second, out)
 }
 
 // crdsExist returns true when the cluster has at least one CRD. Used
 // to skip the --all establishment wait on fresh clusters where the
-// underlying kubectl command would otherwise emit a false-alarm error.
-func crdsExist(ctx context.Context, kubectlContext string) bool {
-	args := []string{"--context", kubectlContext, "get", "crd", "-o", "name"}
-	out, err := exec.CommandContext(ctx, "kubectl", args...).Output()
+// underlying wait command would otherwise emit a false-alarm error.
+func crdsExist(ctx context.Context, kc *cluster.KubeClient) bool {
+	body, err := kc.ListCRDs(ctx)
 	if err != nil {
 		return false
 	}
-	return len(strings.TrimSpace(string(out))) > 0
+	return len(strings.TrimSpace(string(body))) > 0
 }
 
 func newWaitCmd() *cobra.Command {
@@ -1115,12 +1249,12 @@ func newWaitCmd() *cobra.Command {
 		timeout   time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "wait <name> --to <kubectl-context>",
+		Use:   "wait <name> --to <cluster-context>",
 		Short: "Block until OLM subscriptions referenced by <name> have Succeeded CSVs",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toContext == "" {
-				return fmt.Errorf("--to <kubectl-context> is required")
+				return fmt.Errorf("--to <cluster-context> is required")
 			}
 			ws, err := newWorkspace(outputDir, args[0])
 			if err != nil {
@@ -1137,8 +1271,24 @@ func newWaitCmd() *cobra.Command {
 				return fmt.Errorf("%s has metadata.name %q but workspace is %q",
 					ws.FullProvision, fp.Metadata.Name, ws.Name)
 			}
-			if _, err := exec.LookPath("kubectl"); err != nil {
-				return fmt.Errorf("required binary %q not found in PATH", "kubectl")
+			// Load Provision to resolve the KRC (whose spec.cli is
+			// the cluster binary gitups talks to).
+			provPath := filepath.Join(ws.Root, "provision.yaml")
+			prov, err := load.Provision(provPath)
+			if err != nil {
+				return fmt.Errorf("load provision %s: %w", provPath, err)
+			}
+			cat, err := buildProvisionCatalog(prov, ws)
+			if err != nil {
+				return err
+			}
+			kc, err := newKubeClientFromProvision(prov, cat, toContext)
+			if err != nil {
+				return err
+			}
+			if _, err := exec.LookPath(kc.Binary()); err != nil {
+				return fmt.Errorf("KRC %q: required binary %q not found in PATH",
+					kc.KRCName(), kc.Binary())
 			}
 			subs := cluster.SubscriptionsFromPackages(fp.Spec.Packages)
 			out := cmd.ErrOrStderr()
@@ -1146,16 +1296,16 @@ func newWaitCmd() *cobra.Command {
 				fmt.Fprintf(out, "gitups: no OLM subscriptions in %s\n", ws.FullProvision)
 				return nil
 			}
-			fmt.Fprintf(out, "gitups: waiting on %d subscription(s) in context %q (timeout %s)\n",
-				len(subs), toContext, timeout)
-			return cluster.WaitForSubscriptions(cmd.Context(), toContext, subs, cluster.WaitOptions{
+			fmt.Fprintf(out, "gitups: waiting on %d subscription(s) via %s (timeout %s)\n",
+				len(subs), kc.Binary(), timeout)
+			return cluster.WaitForSubscriptions(cmd.Context(), kc, subs, cluster.WaitOptions{
 				Timeout: timeout,
 				Out:     out,
 			})
 		},
 	}
 	addOutputDirFlag(cmd, &outputDir)
-	cmd.Flags().StringVar(&toContext, "to", "", "kubectl context to talk to (required)")
+	cmd.Flags().StringVar(&toContext, "to", "", "cluster context to talk to (required)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "overall wait budget across all subscriptions")
 	cmd.SetContext(context.Background())
 	return cmd
@@ -1462,13 +1612,14 @@ func ensureBinaries() error {
 	return nil
 }
 
-func currentKubectlContext() string {
-	out, err := exec.Command("kubectl", "config", "current-context").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
+// currentKubectlContext used to shell out to `kubectl config
+// current-context`. It was used only as a best-effort default for the
+// rendered tree's `context` label — an advisory string stamped onto
+// the overlay kustomization. Now that gitups core carries no kubectl
+// knowledge, we leave the label empty when the user does not pass
+// `--context`; render still works and users can pass --context
+// explicitly when a stamped value is needed.
+func currentKubectlContext() string { return "" }
 
 // newPlanCmd prints the apply plan (bootstrap subset or full tree)
 // without touching the cluster. Useful for reviewing what gitups will

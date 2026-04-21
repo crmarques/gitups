@@ -1,0 +1,172 @@
+apiVersion: gitups/v1alpha1
+kind: Provision
+metadata:
+  name: test5
+spec:
+  envKey: dev
+  controllers:
+    kubernetesResources:
+      repo: controllers
+      instance: argocd
+    serviceResources:
+      repo: controllers
+      instance: declarest
+  sources:
+    - name: local
+      type: filesystem
+      # Relative to this file. test5 is designed to be run in-tree
+      # (`./bin/gitups <cmd> test5 -d tests/e2e`); the 4-level hop
+      # lands in the sibling `gitups-packages/packages` checkout.
+      # For copy-to-/tmp runs, symlink `gitups-packages` alongside
+      # the output dir before invoking gitups.
+      path: ../../../../gitups-packages/packages
+
+  repositories:
+    # --- Generic repos ------------------------------------------------
+    - name: basic-infra
+      description: "OLM + metallb + nginx-ingress (internal, behind haproxy)."
+      type: kubernetes-resources
+      packages:
+        - template: local/olm
+        - template: local/metallb
+          installMethod: olm
+        - template: local/nginx-ingress
+          installMethod: helm
+
+    - name: support-services
+      description: "haproxy (LoadBalancer entrypoint) + gitea (internal)."
+      type: kubernetes-resources
+      packages:
+        - template: local/haproxy
+          installMethod: helm
+          values:
+            controller:
+              service:
+                type: LoadBalancer
+        - template: local/gitea
+          installMethod: helm
+
+    - name: controllers
+      description: "argocd (KRC) + declarest (SRC)."
+      type: kubernetes-resources
+      packages:
+        - template: local/argocd
+          installMethod: olm
+        - template: local/declarest
+          installMethod: olm
+
+    # --- Env overlays -------------------------------------------------
+    - name: basic-infra-{{.Env}}
+      description: "dev overlay: metallb → nginx-ingress binding materialises the metallb IPAddressPool. haproxy's Service type=LoadBalancer (in support-services) picks up an IP from that pool automatically."
+      type: kubernetes-resources
+      repoRef:
+        name: basic-infra
+      packages:
+        - template: local/nginx-ingress
+          bindings:
+            - name: lb-pool
+              capability: lb-ip-pool
+              provider:
+                repo: basic-infra
+                instance: metallb
+              values:
+                poolName: edge-pool
+                cidrs:
+                  - 172.18.255.200-172.18.255.249
+
+    - name: support-services-{{.Env}}
+      description: "dev overlay for support-services (no overrides needed — defaults from the generic repo suffice)."
+      type: kubernetes-resources
+      repoRef:
+        name: support-services
+
+    - name: controllers-{{.Env}}
+      description: "Argocd instance (default) + declarest CRs — per-service ResourceRepository/ManagedService/SyncPolicy trios for gitea and haproxy."
+      type: kubernetes-resources
+      repoRef:
+        name: controllers
+      packages:
+        - template: local/argocd
+          # Pick up argocd's defaultResources (the argocd `instance`
+          # CR the operator reconciles into a running ArgoCD server).
+        - template: local/declarest
+          resources:
+            # Shared SecretStore (file mode; no vault in this test).
+            - template: secret-store
+              name: local
+              values:
+                kind: file
+            # Per-service ResourceRepositories (one per dsv repo).
+            - template: resource-repository
+              name: gitea
+              values:
+                pollInterval: 1m
+                git:
+                  branch: main
+            - template: resource-repository
+              name: haproxy
+              values:
+                pollInterval: 1m
+                git:
+                  branch: main
+            # Per-service ManagedServices.
+            - template: managed-service
+              name: gitea
+              values:
+                http:
+                  auth:
+                    header: Authorization
+                    prefix: token
+                    valueRef:
+                      name: gitea-admin-token
+            - template: managed-service
+              name: haproxy
+              values:
+                http:
+                  auth:
+                    header: Authorization
+                    prefix: Basic
+                    valueRef:
+                      name: haproxy-dataplane-token
+            # Per-service SyncPolicies bind the three together.
+            - template: sync-policy
+              name: gitea
+              values:
+                resourceRepositoryRef:
+                  name: gitea
+                managedServiceRef:
+                  name: gitea
+                secretStoreRef:
+                  name: local
+                source:
+                  path: /
+                syncInterval: 5m
+            - template: sync-policy
+              name: haproxy
+              values:
+                resourceRepositoryRef:
+                  name: haproxy
+                managedServiceRef:
+                  name: haproxy
+                secretStoreRef:
+                  name: local
+                source:
+                  path: /
+                syncInterval: 5m
+
+    # --- Per-service declarest payload repos (service-resources) ------
+    # Rendered as skeleton (README + empty kustomization). The user
+    # authors declarest resource payloads directly in these repos.
+    - name: gitea-dsv
+      description: "Declarest payloads for gitea: orgs, repos, users, permissions."
+      type: service-resources
+      managedServiceRef:
+        repo: controllers-{{.Env}}
+        instance: gitea
+
+    - name: haproxy-dsv
+      description: "Declarest payloads for haproxy: backends, frontends, acls."
+      type: service-resources
+      managedServiceRef:
+        repo: controllers-{{.Env}}
+        instance: haproxy

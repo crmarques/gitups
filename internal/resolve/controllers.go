@@ -68,10 +68,15 @@ func resolveControllers(
 	}
 
 	// Unique output repo names in deterministic order (same order as
-	// spec.repositories). Env-substituted names.
+	// spec.repositories). Env-substituted names. Service-resources
+	// repos are skipped: they are declarest payload repos reconciled
+	// by the SRC, not Application targets for the KRC.
 	var outputRepos []string
 	seen := map[string]bool{}
 	for _, r := range p.Spec.Repositories {
+		if r.Type == v1.RepoTypeServiceResources {
+			continue
+		}
 		name := substituteEnv(r.Name, envKey)
 		if seen[name] {
 			continue

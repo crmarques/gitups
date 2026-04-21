@@ -1,0 +1,21 @@
+apiVersion: declarest.io/v1alpha1
+kind: ResourceRepository
+metadata:
+  name: gitea
+  namespace: declarest-system
+spec:
+  type: git
+  pollInterval: 1m
+  git:
+    url: https://gitea.dsv.local/gitops/gitea-dsv.git
+    branch: main
+    auth:
+      tokenRef:
+        name: repository-credentials
+        key: token
+  storage:
+    pvc:
+      accessModes:
+        - ReadWriteOnce
+      requests:
+        storage: 1Gi

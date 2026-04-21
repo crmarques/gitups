@@ -1,0 +1,17 @@
+apiVersion: declarest.io/v1alpha1
+kind: ManagedService
+metadata:
+  name: haproxy
+  namespace: declarest-system
+spec:
+  http:
+    baseURL: http://haproxy-kubernetes-ingress.haproxy.svc.cluster.local:5555
+    auth:
+      customHeaders:
+        - header: Authorization
+          prefix: Basic
+          valueRef:
+            name: haproxy-dataplane-token
+            key: token
+  metadata:
+    bundle: haproxy:0.0.1

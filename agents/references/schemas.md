@@ -186,7 +186,17 @@ Service-level reconciliation through declarest is described in
   `packages[].resources[]` list; gitups core performs no service-specific
   projection. The retired `spec.implements[]` / `spec.bundles[]` /
   `Provision.spec.repositories[].interfaceResources[]` machinery
-  (and the `service-resources` repo type) no longer exist.
+  no longer exists.
+- The `service-resources` repo type is the narrower home for
+  declarest resource payloads (one repo per managed service).
+  Declared with `type: service-resources` + `managedServiceRef:
+  {repo, instance}` — the ref points at the env repo and resource
+  instance of the paired `ManagedService` CR. Gitups emits a
+  skeleton (README + empty `kustomization.yaml`); resource payload
+  files (e.g. `orgs/acme.json`, `backends/gitea.json`) are
+  user-authored to match the logical layout of the ManagedService's
+  bundle. `spec.packages[]` is forbidden on this repo type;
+  `repoRef` is forbidden.
 
 ## Compatibility
 

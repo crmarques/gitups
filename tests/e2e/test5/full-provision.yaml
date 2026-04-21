@@ -1,0 +1,660 @@
+apiVersion: gitups/v1alpha1
+kind: FullProvision
+metadata:
+  name: test5
+spec:
+  packages:
+  - applyWave: 0
+    domain: install
+    installMethod: raw
+    instance: olm
+    packageInstance: olm
+    renderedPaths:
+      dir: packages/olm/install/raw
+      repo: basic-infra
+    renderer: raw
+    repository: basic-infra
+    resolvedValues:
+      catalog:
+        image:
+          digest: ad461121b20611bddf98bfa041ca8eeb9f1a28c8c2da8d7c7f3558a4fc68ee9a
+          repository: quay.io/operatorhubio/catalog
+      images:
+        configmapOperatorRegistry:
+          digest: 3e259e1e339ad9d388cb611745312ae1c0390c9338bfd6d9965811e1978d9d1c
+          repository: quay.io/operator-framework/configmap-operator-registry
+        olm:
+          digest: 36563571fdddf266ab871efcec0fbd98d3b74bff14506718aa79f9853712d640
+          repository: quay.io/operator-framework/olm
+        opm:
+          digest: f778630c62ee19b0aeda9969c2488de88ce84d5b1d040c97a33f9f38832bab14
+          repository: quay.io/operator-framework/opm
+      namespace: olm
+      podSecurity:
+        version: v1.35
+      release: v0.42.0
+    role: workload
+    template: local/olm
+    unitType: install
+  - applyWave: 1
+    dependsOn:
+    - olm/install
+    domain: install
+    installMethod: olm
+    instance: metallb
+    packageInstance: metallb
+    renderedPaths:
+      dir: packages/metallb/install/olm
+      repo: basic-infra
+    renderer: olm
+    repository: basic-infra
+    resolvedValues:
+      namespace: metallb-system
+      olm:
+        startingCSV: metallb-operator.v0.14.0
+    role: workload
+    template: local/metallb
+    unitType: install
+  - applyWave: 2
+    dependsOn:
+    - metallb/install
+    domain: install
+    installMethod: helm
+    instance: nginx-ingress
+    packageInstance: nginx-ingress
+    renderedPaths:
+      dir: packages/nginx-ingress/install/helm
+      repo: basic-infra
+    renderer: helm
+    repository: basic-infra
+    resolvedValues:
+      appVersion: 1.15.1
+      chart:
+        version: 4.15.1
+      controller:
+        ingressClassResource:
+          default: true
+          name: nginx
+        service:
+          type: LoadBalancer
+      namespace: ingress-nginx
+    role: workload
+    template: local/nginx-ingress
+    unitType: install
+  - applyWave: 0
+    domain: install
+    installMethod: helm
+    instance: haproxy
+    packageInstance: haproxy
+    renderedPaths:
+      dir: packages/haproxy/install/helm
+      repo: support-services
+    renderer: helm
+    repository: support-services
+    resolvedValues:
+      chart:
+        version: 1.49.0
+      controller:
+        ingressClassResource:
+          default: false
+          name: haproxy
+        service:
+          type: LoadBalancer
+      namespace: haproxy
+    role: workload
+    template: local/haproxy
+    unitType: install
+  - applyWave: 0
+    domain: install
+    installMethod: helm
+    instance: gitea
+    packageInstance: gitea
+    renderedPaths:
+      dir: packages/gitea/install/helm
+      repo: support-services
+    renderer: helm
+    repository: support-services
+    resolvedValues:
+      appVersion: 1.25.5
+      chart:
+        version: 12.5.3
+      namespace: gitea
+      persistence:
+        enabled: false
+      postgresql:
+        enabled: false
+      postgresql-ha:
+        enabled: false
+      redis-cluster:
+        enabled: false
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    role: workload
+    template: local/gitea
+    unitType: install
+  - applyWave: 1
+    dependsOn:
+    - olm/install
+    domain: install
+    installMethod: olm
+    instance: argocd
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/install/olm
+      repo: controllers
+    renderer: olm
+    repository: controllers
+    resolvedValues:
+      namespace: argocd
+      olm:
+        startingCSV: argocd-operator.v0.17.0
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: install
+  - applyWave: 1
+    dependsOn:
+    - olm/install
+    domain: install
+    installMethod: olm
+    instance: declarest
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/install/olm
+      repo: controllers
+    renderer: olm
+    repository: controllers
+    resolvedValues:
+      namespace: declarest-system
+      olm:
+        startingCSV: declarest-operator.v0.4.0
+    role: service-resource-controller
+    template: local/declarest
+    unitType: install
+  - applyWave: 1
+    dependsOn:
+    - gitea/install
+    domain: resources
+    instance: gitea-config-default
+    packageInstance: gitea
+    renderedPaths:
+      dir: packages/gitea/resources/config/default
+      repo: support-services-dev
+    renderer: raw
+    repository: support-services-dev
+    resolvedValues:
+      namespace: gitea
+      rootURL: http://gitea.gitea.svc.cluster.local:3000/
+    resourceName: default
+    resourceTemplate: config
+    role: workload
+    template: local/gitea
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - argocd/install
+    domain: resources
+    instance: argocd-instance-default
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/resources/instance/default
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      instance: argocd
+      namespace: argocd
+    resourceName: default
+    resourceTemplate: instance
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-secret-store-local
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/secret-store/local
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      file:
+        passphrase:
+          secretRef:
+            key: passphrase
+            name: ""
+        path: /var/lib/declarest/secrets/secrets.json
+      kind: file
+      namespace: declarest-system
+      storage:
+        accessMode: ReadWriteOnce
+        size: 1Gi
+      vault:
+        address: ""
+        auth:
+          token:
+            secretRef:
+              key: token
+              name: ""
+    resourceName: local
+    resourceTemplate: secret-store
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-resource-repository-gitea
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/resource-repository/gitea
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      git:
+        auth:
+          tokenRef:
+            key: token
+            name: repository-credentials
+        branch: main
+        url: https://gitea.dsv.local/gitops/gitea-dsv.git
+      namespace: declarest-system
+      pollInterval: 1m
+      storage:
+        accessMode: ReadWriteOnce
+        size: 1Gi
+    resourceName: gitea
+    resourceTemplate: resource-repository
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-resource-repository-haproxy
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/resource-repository/haproxy
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      git:
+        auth:
+          tokenRef:
+            key: token
+            name: repository-credentials
+        branch: main
+        url: https://gitea.dsv.local/gitops/haproxy-dsv.git
+      namespace: declarest-system
+      pollInterval: 1m
+      storage:
+        accessMode: ReadWriteOnce
+        size: 1Gi
+    resourceName: haproxy
+    resourceTemplate: resource-repository
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-managed-service-gitea
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/managed-service/gitea
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      http:
+        auth:
+          header: Authorization
+          prefix: token
+          valueRef:
+            key: token
+            name: gitea-admin-token
+        baseURL: http://gitea-http.gitea.svc.cluster.local:3000
+      metadata:
+        bundle: gitea:0.0.1
+      namespace: declarest-system
+    resourceName: gitea
+    resourceTemplate: managed-service
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-managed-service-haproxy
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/managed-service/haproxy
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      http:
+        auth:
+          header: Authorization
+          prefix: Basic
+          valueRef:
+            key: token
+            name: haproxy-dataplane-token
+        baseURL: http://haproxy-kubernetes-ingress.haproxy.svc.cluster.local:5555
+      metadata:
+        bundle: haproxy:0.0.1
+      namespace: declarest-system
+    resourceName: haproxy
+    resourceTemplate: managed-service
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-sync-policy-gitea
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/sync-policy/gitea
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      managedServiceRef:
+        name: gitea
+      namespace: declarest-system
+      resourceRepositoryRef:
+        name: gitea
+      secretStoreRef:
+        name: local
+      source:
+        path: /
+        recursive: true
+      suspend: false
+      sync:
+        force: false
+        prune: false
+      syncInterval: 5m
+    resourceName: gitea
+    resourceTemplate: sync-policy
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 2
+    dependsOn:
+    - declarest/install
+    domain: resources
+    instance: declarest-sync-policy-haproxy
+    packageInstance: declarest
+    renderedPaths:
+      dir: packages/declarest/resources/sync-policy/haproxy
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      managedServiceRef:
+        name: haproxy
+      namespace: declarest-system
+      resourceRepositoryRef:
+        name: haproxy
+      secretStoreRef:
+        name: local
+      source:
+        path: /
+        recursive: true
+      suspend: false
+      sync:
+        force: false
+        prune: false
+      syncInterval: 5m
+    resourceName: haproxy
+    resourceTemplate: sync-policy
+    role: service-resource-controller
+    template: local/declarest
+    unitType: resource
+  - applyWave: 3
+    binding:
+      capability: lb-ip-pool
+      name: lb-pool
+      side: consumer
+    dependsOn:
+    - nginx-ingress/install
+    - metallb/resources/pool/lb-pool-basic-infra-dev
+    domain: resources
+    instance: nginx-ingress-lb-binding-lb-pool-basic-infra-dev
+    packageInstance: nginx-ingress
+    renderedPaths:
+      dir: packages/nginx-ingress/resources/lb-binding/lb-pool-basic-infra-dev
+      repo: basic-infra-dev
+    renderer: raw
+    repository: basic-infra-dev
+    resolvedValues:
+      cidrs:
+      - 172.18.255.200-172.18.255.249
+      namespace: ingress-nginx
+      poolName: edge-pool
+      serviceName: ingress-nginx-controller
+    resourceName: lb-pool-basic-infra-dev
+    resourceTemplate: lb-binding
+    role: workload
+    template: local/nginx-ingress
+    unitType: resource
+  - applyWave: 2
+    binding:
+      capability: lb-ip-pool
+      name: lb-pool
+      side: provider
+    dependsOn:
+    - metallb/install
+    domain: resources
+    instance: metallb-pool-lb-pool-basic-infra-dev
+    packageInstance: metallb
+    renderedPaths:
+      dir: packages/metallb/resources/pool/lb-pool-basic-infra-dev
+      repo: basic-infra-dev
+    renderer: raw
+    repository: basic-infra-dev
+    resolvedValues:
+      cidrs:
+      - 172.18.255.200-172.18.255.249
+      namespace: metallb-system
+      poolName: edge-pool
+    resourceName: lb-pool-basic-infra-dev
+    resourceTemplate: pool
+    role: workload
+    template: local/metallb
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+      template: local/argocd
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-basic-infra
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/basic-infra
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://gitea.dsv.local/gitops/basic-infra.git
+      targetRevision: HEAD
+    resourceName: basic-infra
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+      template: local/argocd
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-support-services
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/support-services
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://gitea.dsv.local/gitops/support-services.git
+      targetRevision: HEAD
+    resourceName: support-services
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+      template: local/argocd
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-basic-infra-dev
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/basic-infra-dev
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://gitea.dsv.local/gitops/basic-infra-dev.git
+      targetRevision: HEAD
+    resourceName: basic-infra-dev
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+      template: local/argocd
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-support-services-dev
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/support-services-dev
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://gitea.dsv.local/gitops/support-services-dev.git
+      targetRevision: HEAD
+    resourceName: support-services-dev
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  - applyWave: 3
+    controller:
+      instance: argocd
+      intent: managed-repo
+      kind: kubernetes-resource-controller
+      template: local/argocd
+    dependsOn:
+    - argocd/resources/instance
+    domain: kubernetes-resource-controller
+    instance: argocd-managed-repo-controllers-dev
+    packageInstance: argocd
+    renderedPaths:
+      dir: packages/argocd/kubernetes-resource-controller/managed-repo/controllers-dev
+      repo: controllers-dev
+    renderer: raw
+    repository: controllers-dev
+    resolvedValues:
+      destinationNamespace: argocd
+      namespace: argocd
+      path: .
+      repoURL: https://gitea.dsv.local/gitops/controllers-dev.git
+      targetRevision: HEAD
+    resourceName: controllers-dev
+    resourceTemplate: managed-repo
+    role: kubernetes-resource-controller
+    template: local/argocd
+    unitType: resource
+  placeholders: null
+  repositories:
+  - description: OLM + metallb + nginx-ingress (internal, behind haproxy).
+    name: basic-infra
+    type: kubernetes-resources
+  - description: haproxy (LoadBalancer entrypoint) + gitea (internal).
+    name: support-services
+    type: kubernetes-resources
+  - description: argocd (KRC) + declarest (SRC).
+    name: controllers
+    type: kubernetes-resources
+  - description: 'dev overlay: metallb → nginx-ingress binding materialises the metallb
+      IPAddressPool. haproxy''s Service type=LoadBalancer (in support-services) picks
+      up an IP from that pool automatically.'
+    name: basic-infra-dev
+    repoRef:
+      name: basic-infra
+    type: kubernetes-resources
+  - description: dev overlay for support-services (no overrides needed — defaults
+      from the generic repo suffice).
+    name: support-services-dev
+    repoRef:
+      name: support-services
+    type: kubernetes-resources
+  - description: Argocd instance (default) + declarest CRs — per-service ResourceRepository/ManagedService/SyncPolicy
+      trios for gitea and haproxy.
+    name: controllers-dev
+    repoRef:
+      name: controllers
+    type: kubernetes-resources
+  - description: 'Declarest payloads for gitea: orgs, repos, users, permissions.'
+    managedServiceRef:
+      instance: gitea
+      repo: controllers-dev
+    name: gitea-dsv
+    type: service-resources
+  - description: 'Declarest payloads for haproxy: backends, frontends, acls.'
+    managedServiceRef:
+      instance: haproxy
+      repo: controllers-dev
+    name: haproxy-dsv
+    type: service-resources
+  repository:
+    layout: split
+    outputPath: ./out/test5
+  sourceProvisionRef:
+    name: test5
+  sources:
+  - name: local
+    path: ../../../../gitups-packages/packages
+    type: filesystem

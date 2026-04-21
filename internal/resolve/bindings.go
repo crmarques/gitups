@@ -124,7 +124,7 @@ func resolveBindings(
 						loc, b.Name, providerInstance)
 				}
 
-				consumerTemplate := fullyQualifiedTemplate(p, consumerEntry, repo.Name, pr.Template)
+				consumerTemplate := fullyQualifiedTemplate(consumerEntry, pr.Template)
 
 				for _, envRepo := range envRepos {
 					providerEnvRepoName := substituteEnv(envRepo.Name, envKey)
@@ -267,7 +267,7 @@ func findProvider(p *v1.Provision, cat *catalog.Catalog, repoName, instance stri
 // fullyQualifiedTemplate returns the consumer's template string as written
 // in its PackageRef. We use the declared form so ResolvedPackage.Template
 // matches what the user wrote.
-func fullyQualifiedTemplate(p *v1.Provision, entry catalog.Entry, repoName, declared string) string {
+func fullyQualifiedTemplate(entry catalog.Entry, declared string) string {
 	if declared != "" {
 		return declared
 	}

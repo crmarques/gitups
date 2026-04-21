@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-lb-binding-lb-pool-basic-infra-dev
+  namespace: ingress-nginx
+  labels:
+    gitups.io/binding: lb-ip-pool
+data:
+  serviceName: ingress-nginx-controller
+  poolName: edge-pool
+  cidrs: |
+    - 172.18.255.200-172.18.255.249

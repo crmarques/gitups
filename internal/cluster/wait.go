@@ -1,6 +1,8 @@
-// Package cluster holds cluster-touching helpers shared between `gitups
-// apply` and `gitups wait`. It shells to kubectl rather than pulling in
-// client-go, keeping the binary small and dependency-light.
+// Cluster-state waits used by `gitups apply --wait-crds` and `gitups
+// wait`. Every kubectl-equivalent read is routed through the KubeClient
+// so gitups core carries no hard-coded cluster binary — the selected
+// KRC package decides what to run.
+
 package cluster
 
 import (
@@ -8,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -69,10 +70,14 @@ type WaitOptions struct {
 
 // WaitForSubscriptions blocks until every subscription's .status.installedCSV
 // is non-empty and the named ClusterServiceVersion reaches phase=Succeeded.
-// Returns an error on timeout or on a CSV reaching Failed.
-func WaitForSubscriptions(ctx context.Context, kubectlContext string, subs []SubscriptionRef, opts WaitOptions) error {
+// Returns an error on timeout or on a CSV reaching Failed. Every read goes
+// through kc so the cluster binary stays KRC-declared.
+func WaitForSubscriptions(ctx context.Context, kc *KubeClient, subs []SubscriptionRef, opts WaitOptions) error {
 	if len(subs) == 0 {
 		return nil
+	}
+	if kc == nil {
+		return fmt.Errorf("WaitForSubscriptions: KubeClient is nil")
 	}
 	if opts.Interval <= 0 {
 		opts.Interval = 5 * time.Second
@@ -85,14 +90,14 @@ func WaitForSubscriptions(ctx context.Context, kubectlContext string, subs []Sub
 	}
 	deadline := time.Now().Add(opts.Timeout)
 	for _, s := range subs {
-		if err := waitOne(ctx, kubectlContext, s, deadline, opts); err != nil {
+		if err := waitOne(ctx, kc, s, deadline, opts); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.Time, opts WaitOptions) error {
+func waitOne(ctx context.Context, kc *KubeClient, s SubscriptionRef, deadline time.Time, opts WaitOptions) error {
 	fmt.Fprintf(opts.Out, "gitups: wait subscription %s/%s → installedCSV\n", s.Namespace, s.Name)
 	var csv string
 	for {
@@ -102,7 +107,7 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timeout resolving installedCSV for subscription %s/%s", s.Namespace, s.Name)
 		}
-		body, err := kubectlGetJSON(ctx, kctx, s.Namespace, "subscription", s.Name)
+		body, err := kc.GetJSON(ctx, s.Namespace, "subscription", s.Name)
 		if err == nil {
 			csv = subInstalledCSV(body)
 			if csv != "" {
@@ -117,10 +122,10 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 			return ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			surfaceCSVDiagnostics(ctx, kctx, s.Namespace, csv, opts.Out)
+			surfaceCSVDiagnostics(ctx, kc, s.Namespace, csv, opts.Out)
 			return fmt.Errorf("timeout waiting for csv %s/%s to Succeed", s.Namespace, csv)
 		}
-		body, err := kubectlGetJSON(ctx, kctx, s.Namespace, "csv", csv)
+		body, err := kc.GetJSON(ctx, s.Namespace, "csv", csv)
 		if err == nil {
 			phase, reason := csvPhase(body)
 			switch phase {
@@ -128,7 +133,7 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 				fmt.Fprintf(opts.Out, "gitups: csv %s/%s Succeeded\n", s.Namespace, csv)
 				return nil
 			case "Failed":
-				surfaceCSVDiagnostics(ctx, kctx, s.Namespace, csv, opts.Out)
+				surfaceCSVDiagnostics(ctx, kc, s.Namespace, csv, opts.Out)
 				return fmt.Errorf("csv %s/%s Failed: %s", s.Namespace, csv, reason)
 			}
 		}
@@ -138,19 +143,16 @@ func waitOne(ctx context.Context, kctx string, s SubscriptionRef, deadline time.
 
 // surfaceCSVDiagnostics prints the CSV's status phase/message plus the
 // last 40 log lines of every pod labelled olm.owner=<csv>. Best-effort:
-// swallows kubectl errors so that the caller's own error path still
-// reports the original timeout/Failed cause.
-func surfaceCSVDiagnostics(ctx context.Context, kctx, ns, csv string, out io.Writer) {
+// swallows errors so the caller's own error path still reports the
+// original timeout/Failed cause.
+func surfaceCSVDiagnostics(ctx context.Context, kc *KubeClient, ns, csv string, out io.Writer) {
 	fmt.Fprintf(out, "gitups: diagnostics for csv %s/%s:\n", ns, csv)
-	if body, err := kubectlGetJSON(ctx, kctx, ns, "csv", csv); err == nil {
+	if body, err := kc.GetJSON(ctx, ns, "csv", csv); err == nil {
 		phase, reason := csvPhase(body)
 		fmt.Fprintf(out, "gitups:   csv.status.phase=%q reason=%q\n", phase, reason)
 	}
-	// List pods owned by the CSV; label is set by OLM.
 	selector := "olm.owner=" + csv
-	listArgs := []string{"--context", kctx, "-n", ns, "get", "pods", "-l", selector,
-		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"|\"}{.status.phase}{\"\\n\"}{end}"}
-	podList, err := exec.CommandContext(ctx, "kubectl", listArgs...).Output()
+	podList, err := kc.ListPodsJSONPath(ctx, ns, selector)
 	if err != nil || len(podList) == 0 {
 		fmt.Fprintf(out, "gitups:   (no pods labelled %s in %s — skipping log tail)\n", selector, ns)
 		return
@@ -166,17 +168,11 @@ func surfaceCSVDiagnostics(ctx context.Context, kctx, ns, csv string, out io.Wri
 			continue
 		}
 		fmt.Fprintf(out, "gitups:   pod %s phase=%s — last 40 lines:\n", podName, phase)
-		logArgs := []string{"--context", kctx, "-n", ns, "logs", podName, "--all-containers=true", "--tail=40"}
-		body, _ := exec.CommandContext(ctx, "kubectl", logArgs...).CombinedOutput()
+		body, _ := kc.PodLogs(ctx, ns, podName)
 		for _, l := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
 			fmt.Fprintf(out, "gitups:     %s\n", l)
 		}
 	}
-}
-
-func kubectlGetJSON(ctx context.Context, kctx, ns, kind, name string) ([]byte, error) {
-	args := []string{"--context", kctx, "-n", ns, "get", kind, name, "-o", "json"}
-	return exec.CommandContext(ctx, "kubectl", args...).Output()
 }
 
 // subInstalledCSV pulls .status.installedCSV from a Subscription JSON body.

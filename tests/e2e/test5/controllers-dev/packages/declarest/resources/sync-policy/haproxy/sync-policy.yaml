@@ -1,0 +1,20 @@
+apiVersion: declarest.io/v1alpha1
+kind: SyncPolicy
+metadata:
+  name: haproxy
+  namespace: declarest-system
+spec:
+  resourceRepositoryRef:
+    name: haproxy
+  managedServiceRef:
+    name: haproxy
+  secretStoreRef:
+    name: local
+  source:
+    path: /
+    recursive: true
+  sync:
+    force: false
+    prune: false
+  syncInterval: 5m
+  suspend: false

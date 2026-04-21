@@ -27,10 +27,22 @@ type CLIRunner interface {
 // Packages may only reference these fields (plus literal strings); any
 // other template variable is a render-time error. Keeping the surface
 // small keeps invocations deterministic and auditable.
+//
+// KubeContext / ManifestPath / Namespace are shared with SRC CLI
+// invocations. Kind / Name / Selector / Condition / Timeout / Pod are
+// KRC-probe-specific: the KRC's spec.cli.intents templates reference
+// them when rendering kubectl-equivalent commands for apply, get, wait,
+// log tail, etc.
 type CLIContext struct {
 	KubeContext  string
 	ManifestPath string
 	Namespace    string
+	Kind         string
+	Name         string
+	Selector     string
+	Condition    string
+	Timeout      string
+	Pod          string
 }
 
 // RenderCLIArgs substitutes the declared CLI args against ctx using Go's
@@ -43,19 +55,33 @@ func RenderCLIArgs(spec *v1.ControllerCLI, ctx CLIContext) ([]string, error) {
 	if spec.Binary == "" {
 		return nil, fmt.Errorf("controller cli binary is empty")
 	}
-	out := make([]string, 0, len(spec.Args))
-	for i, a := range spec.Args {
-		tmpl, err := template.New(fmt.Sprintf("cli.args[%d]", i)).Option("missingkey=error").Parse(a)
+	return renderArgTemplates("cli.args", spec.Args, ctx)
+}
+
+// renderArgTemplates is the shared template-render helper for any args
+// slice (spec.cli.args, spec.cli.intents[k].args). Returns one rendered
+// string per input entry.
+func renderArgTemplates(label string, args []string, ctx CLIContext) ([]string, error) {
+	out := make([]string, 0, len(args))
+	for i, a := range args {
+		tmpl, err := template.New(fmt.Sprintf("%s[%d]", label, i)).Option("missingkey=error").Parse(a)
 		if err != nil {
-			return nil, fmt.Errorf("parse cli arg[%d] %q: %w", i, a, err)
+			return nil, fmt.Errorf("parse %s[%d] %q: %w", label, i, a, err)
 		}
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, ctx); err != nil {
-			return nil, fmt.Errorf("render cli arg[%d] %q: %w", i, a, err)
+			return nil, fmt.Errorf("render %s[%d] %q: %w", label, i, a, err)
 		}
 		out = append(out, buf.String())
 	}
 	return out, nil
+}
+
+// RenderIntentArgs renders one intent's args template against ctx.
+// Separate entrypoint so callers do not need to synthesise a new
+// ControllerCLI just to reuse RenderCLIArgs.
+func RenderIntentArgs(intent string, args []string, ctx CLIContext) ([]string, error) {
+	return renderArgTemplates("cli.intents."+intent+".args", args, ctx)
 }
 
 // DefaultCLIRunner runs binary+args via os/exec, streaming stdout/stderr
